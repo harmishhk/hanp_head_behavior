@@ -1,0 +1,33 @@
+<?xml version="1.0"?>
+<package>
+  <name>hanp_head_behavior</name>
+
+  <version>0.0.1</version>
+
+  <description>head behavior for human-aware navigation</description>
+
+  <!-- <author email="harmish@laas.fr">harmish khambhaita</author> -->
+  <maintainer email="harmish@laas.fr">harmish khambhaita</maintainer>
+
+  <license>BSD</license>
+
+  <!--  <url website >http://wiki.ors.org/hanp_local_planner</url>  -->
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <build_depend>dynamic_reconfigure</build_depend>
+  <build_depend>geometry_msgs</build_depend>
+  <build_depend>hanp_msgs</build_depend>
+  <build_depend>nav_msgs</build_depend>
+  <build_depend>roscpp</build_depend>
+  <build_depend>tf</build_depend>
+  <build_depend>visualization_msgs</build_depend>
+
+  <run_depend>dynamic_reconfigure</run_depend>
+  <run_depend>geometry_msgs</run_depend>
+  <run_depend>hanp_msgs</run_depend>
+  <run_depend>nav_msgs</run_depend>
+  <run_depend>roscpp</run_depend>
+  <run_depend>tf</run_depend>
+  <run_depend>visualization_msgs</run_depend>
+</package>
