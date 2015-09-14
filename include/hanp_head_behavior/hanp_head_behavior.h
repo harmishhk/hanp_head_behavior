@@ -40,8 +40,26 @@
 #include <geometry_msgs/PointStamped.h>
 #include <tf/transform_listener.h>
 
+#include <Eigen/Core>
+
 namespace hanp_head_behavior
 {
+    struct Entity
+    {
+    private:
+        Eigen::Vector4d entity;
+    public:
+        double& x;
+        double& y;
+        double& vx;
+        double& vy;
+
+        Entity(Eigen::Vector4d entity) : entity(entity), x(entity[0]), y(entity[1]),
+            vx(entity[2]), vy(entity[3]) {};
+    };
+
+    // typedef struct Entity { double x, y, vx, vy; } Entity;
+
     class HANPHeadBehavior
     {
     public:
@@ -63,11 +81,15 @@ namespace hanp_head_behavior
         void localPlanCB(const nav_msgs::Path& local_plan);
         void trackedHumansCB(const hanp_msgs::TrackedHumans& tracked_humans);
 
-        std::string local_plan_sub_topic_, human_sub_topic_, point_head_pub_topic_, robot_base_frame_;
+        std::string local_plan_sub_topic_, human_sub_topic_, point_head_pub_topic_,
+            robot_base_frame_;
 
-        double point_head_height_;
+        tf::TransformListener tf_;
+        double ttc_collision_radius_, point_head_height_;
+        geometry_msgs::PoseStamped* human_cost_point_;
 
         void publishPointHead(geometry_msgs::PointStamped& point_head);
+        double timeToCollision(hanp_head_behavior::Entity robot, hanp_head_behavior::Entity human);
     };
 }
 

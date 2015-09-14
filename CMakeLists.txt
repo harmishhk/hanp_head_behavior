@@ -14,6 +14,8 @@ find_package(catkin REQUIRED COMPONENTS
   visualization_msgs
 )
 
+find_package(Eigen3 REQUIRED)
+
 ## install python modules and global scripts
 # catkin_python_setup()
 
@@ -70,7 +72,9 @@ catkin_package(
 include_directories(
   include
   ${catkin_INCLUDE_DIRS}
+  ${EIGEN3_INCLUDE_DIR}
 )
+add_definitions(${EIGEN_DEFINITIONS})
 
 # declare a c++ executable
 add_executable(hanp_head_behavior
