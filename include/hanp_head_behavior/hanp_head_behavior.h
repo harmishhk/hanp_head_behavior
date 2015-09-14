@@ -38,6 +38,7 @@
 #include <hanp_msgs/TrackedHumans.h>
 #include <nav_msgs/Path.h>
 #include <geometry_msgs/PointStamped.h>
+#include <tf/transform_listener.h>
 
 namespace hanp_head_behavior
 {
@@ -62,7 +63,11 @@ namespace hanp_head_behavior
         void localPlanCB(const nav_msgs::Path& local_plan);
         void trackedHumansCB(const hanp_msgs::TrackedHumans& tracked_humans);
 
+        std::string local_plan_sub_topic_, human_sub_topic_, point_head_pub_topic_, robot_base_frame_;
+
         double point_head_height_;
+
+        void publishPointHead(geometry_msgs::PointStamped& point_head);
     };
 }
 
