@@ -32,6 +32,8 @@
 
 #include <ros/ros.h>
 
+#include <hanp_head_behavior/hanp_head_behavior_cost_func.h>
+
 #include <dynamic_reconfigure/server.h>
 #include <hanp_head_behavior/HANPHeadBehaviorConfig.h>
 
@@ -58,7 +60,20 @@ namespace hanp_head_behavior
             vx(entity[2]), vy(entity[3]) {};
     };
 
-    // typedef struct Entity { double x, y, vx, vy; } Entity;
+    class PathCostFunc : public HANPHeadBehaviorCostFunc
+    {
+    public:
+        PathCostFunc();
+    };
+
+    class HumanCostFunc : public HANPHeadBehaviorCostFunc
+    {
+    public:
+        HumanCostFunc();
+
+        bool looking_at_someone;
+        int looking_at_id;
+    };
 
     class HANPHeadBehavior
     {
@@ -82,13 +97,18 @@ namespace hanp_head_behavior
         void trackedHumansCB(const hanp_msgs::TrackedHumans& tracked_humans);
 
         std::string local_plan_sub_topic_, human_sub_topic_, point_head_pub_topic_,
-            robot_base_frame_;
+            robot_base_frame_, head_pan_frame_;
 
         tf::TransformListener tf_;
-        double ttc_collision_radius_, point_head_height_;
-        geometry_msgs::PoseStamped* human_cost_point_;
+        ros::Timer publish_timer_;
+        int publish_rate_;
+        double ttc_collision_radius_, point_head_height_, visibility_angle_;
 
-        void publishPointHead(geometry_msgs::PointStamped& point_head);
+        hanp_head_behavior::PathCostFunc* path_cost_func_;
+        hanp_head_behavior::HumanCostFunc* human_cost_func_;
+        std::vector<hanp_head_behavior::HANPHeadBehaviorCostFunc*> cost_functions_;
+
+        void publishPointHead(const ros::TimerEvent& event);
         double timeToCollision(hanp_head_behavior::Entity robot, hanp_head_behavior::Entity human);
     };
 }

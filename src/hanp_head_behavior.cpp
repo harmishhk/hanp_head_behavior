@@ -27,23 +27,29 @@
  *                                  Harmish Khambhaita on Sat Sep 12 2015
  */
 
- // defining constants
- #define NODE_NAME "hanp_head_behavior"
+// defining constants
+#define NODE_NAME "hanp_head_behavior"
 
- #define LOCAL_PLAN_SUB_TOPIC "local_plan"
- #define HUMAN_SUB_TOPIC "humans"
- #define POINT_HEAD_PUB_TOPIC "point_head"
- #define ROBOT_BASE_FRAME "base_link"
+#define LOCAL_PLAN_SUB_TOPIC "local_plan"
+#define HUMAN_SUB_TOPIC "humans"
+#define POINT_HEAD_PUB_TOPIC "point_head"
+#define ROBOT_BASE_FRAME "base_link"
+#define HEAD_PAN_FRAME "head_pan_link"
+#define PUBLISH_RATE 10
+#define VISIBILITY_ANGLE 0.087 //radian (5 degrees)
 
- #include <signal.h>
+#include <signal.h>
 
- #include <hanp_head_behavior/hanp_head_behavior.h>
+#include <hanp_head_behavior/hanp_head_behavior.h>
 
- namespace hanp_head_behavior
- {
-     // empty constructor and destructor
-     HANPHeadBehavior::HANPHeadBehavior() {}
-     HANPHeadBehavior::~HANPHeadBehavior() {}
+namespace hanp_head_behavior
+{
+    // empty constructor and destructor
+    HANPHeadBehavior::HANPHeadBehavior() {}
+    HANPHeadBehavior::~HANPHeadBehavior() {}
+
+    PathCostFunc::PathCostFunc() {}
+    HumanCostFunc::HumanCostFunc() {}
 
     void HANPHeadBehavior::initialize()
     {
@@ -54,12 +60,37 @@
         private_nh.param("local_plan_sub_topic", local_plan_sub_topic_, std::string(LOCAL_PLAN_SUB_TOPIC));
         private_nh.param("human_sub_topic", human_sub_topic_, std::string(HUMAN_SUB_TOPIC));
         private_nh.param("point_head_pub_topic", point_head_pub_topic_, std::string(POINT_HEAD_PUB_TOPIC));
+
         private_nh.param("robot_base_frame", robot_base_frame_, std::string(ROBOT_BASE_FRAME));
+        private_nh.param("head_pan_frame", head_pan_frame_, std::string(HEAD_PAN_FRAME));
+
+        private_nh.param("publish_rate", publish_rate_, PUBLISH_RATE);
 
         // initialize subscribers and publishers
         local_plan_sub_ = private_nh.subscribe(local_plan_sub_topic_, 1, &HANPHeadBehavior::localPlanCB, this);
         humans_sub_ = private_nh.subscribe(human_sub_topic_, 1, &HANPHeadBehavior::trackedHumansCB, this);
         point_head_pub_ = private_nh.advertise<geometry_msgs::PointStamped>(point_head_pub_topic_, 1);
+
+        // initialize publish timer
+        // create a publish timer
+        if(publish_rate_ > 0.0)
+        {
+            publish_timer_ = private_nh.createTimer(ros::Duration(1.0 / publish_rate_),
+                &HANPHeadBehavior::publishPointHead, this);
+            ROS_INFO_NAMED(NODE_NAME, "publishing: %s at %d hz",
+                point_head_pub_topic_.c_str(), publish_rate_);
+        }
+        else
+        {
+            ROS_ERROR_NAMED(NODE_NAME, "%s: publish rate cannot be < 0,"
+                " nothing will be published", std::string(NODE_NAME).c_str());
+        }
+
+        // initialize cost functions
+        path_cost_func_ = new hanp_head_behavior::PathCostFunc();
+        cost_functions_.push_back(path_cost_func_);
+        human_cost_func_ = new hanp_head_behavior::HumanCostFunc();
+        cost_functions_.push_back(human_cost_func_);
 
         // set-up dynamic reconfigure
         dsrv_ = new dynamic_reconfigure::Server<HANPHeadBehaviorConfig>(private_nh);
@@ -69,8 +100,17 @@
 
     void HANPHeadBehavior::reconfigureCB(HANPHeadBehaviorConfig &config, uint32_t level)
     {
+        robot_base_frame_ = config.robot_base_frame;
+        head_pan_frame_ = config.head_pan_frame;
+
         point_head_height_ = config.point_head_height;
         ttc_collision_radius_ = config.ttc_collision_dist/2;
+        visibility_angle_ = config.visibility_angle;
+
+        publish_rate_ = config.publish_rate;
+
+        path_cost_func_->cost = config.path_func_cost;
+        human_cost_func_->cost = config.human_func_cost;
     }
 
     void HANPHeadBehavior::localPlanCB(const nav_msgs::Path& local_plan)
@@ -78,16 +118,8 @@
         geometry_msgs::PointStamped point_head;
         point_head.header.stamp = ros::Time::now();
 
-        // first check if we are looking at human
-        if(human_cost_point_)
-        {
-            point_head.header.frame_id = human_cost_point_->header.frame_id;
-            point_head.point = human_cost_point_->pose.position;
-
-            ROS_DEBUG_NAMED(NODE_NAME, "head pointing to a human");
-        }
         // look at the end of the local plan
-        else if(local_plan.poses.size() > 0)
+        if(local_plan.poses.size() > 0)
         {
             tf::Pose local_plan_end;
             tf::poseMsgToTF(local_plan.poses.back().pose, local_plan_end);
@@ -110,13 +142,90 @@
             ROS_DEBUG_NAMED(NODE_NAME, "head pointing in the front");
         }
 
-        publishPointHead(point_head);
+        path_cost_func_->cost = 0.9;
+        path_cost_func_->point = point_head;
     }
 
     void HANPHeadBehavior::trackedHumansCB(const hanp_msgs::TrackedHumans& tracked_humans)
     {
-        // get robot pose in frame of humans
         bool transform_found = false;
+        tf::StampedTransform head_pan_to_humans_transform;
+
+        // check if we are already looking at human
+        if(human_cost_func_->looking_at_someone)
+        {
+            // get the person we are looking at
+            hanp_msgs::TrackedHuman looking_at;
+            for(auto tracked_human : tracked_humans.tracks)
+            {
+                if(tracked_human.track_id == human_cost_func_->looking_at_id)
+                {
+                    looking_at = tracked_human;
+                    break;
+                }
+            }
+            // to whom we were looking at is still detected
+            if(looking_at.track_id != 0)
+            {
+                // get transform between head_pan and humans frame
+                int res;
+                try
+                {
+                    std::string error_msg;
+                    res = tf_.waitForTransform(head_pan_frame_, tracked_humans.header.frame_id,
+                        ros::Time(0), ros::Duration(0.5), ros::Duration(0.01), &error_msg);
+                    tf_.lookupTransform(head_pan_frame_, tracked_humans.header.frame_id,
+                        ros::Time(0), head_pan_to_humans_transform);
+                    transform_found = true;
+                }
+                catch(const tf::ExtrapolationException &ex)
+                {
+                    ROS_DEBUG("context_cost_function: cannot extrapolate transform");
+                }
+                catch(const tf::TransformException &ex)
+                {
+                    ROS_ERROR("context_cost_function: transform failure (%d): %s", res, ex.what());
+                }
+
+                if(transform_found)
+                {
+                    // get human whom we are looking at in head_pan frame
+                    tf::Pose transformed_human_tf;
+                    tf::poseMsgToTF(looking_at.pose.pose, transformed_human_tf);
+                    auto human_pose_in_head_pan = (head_pan_to_humans_transform * transformed_human_tf).getOrigin();
+
+                    // check if human is already in visibility range
+                    auto head_pan_to_human_angle = atan2(human_pose_in_head_pan.getX(), human_pose_in_head_pan.getY());
+                    if(fabs(head_pan_to_human_angle) < visibility_angle_)
+                    {
+                        human_cost_func_->cost = 0.0;
+                        human_cost_func_->looking_at_someone = false;
+                    }
+                    else
+                    {
+                        // update the looking point with new human position
+                        geometry_msgs::PointStamped human_cost_point;
+                        human_cost_point.header.stamp = ros::Time::now();
+                        human_cost_point.header.frame_id = head_pan_frame_;
+                        human_cost_point.point.x = human_pose_in_head_pan.getX();
+                        human_cost_point.point.y = human_pose_in_head_pan.getY();
+
+                        human_cost_func_->cost = 1.0;
+                        human_cost_func_->point = human_cost_point;
+                        return;
+                    }
+                }
+            }
+            // we lost the human whom we were looking at
+            else
+            {
+                //TODO: dedice whether to keep looking at persons last knows position until we finish, and implement here
+            }
+        }
+
+        // we are her if we are currently not looking at anyone or we lost whom we were looking at
+
+        // get robot pose in frame of humans
         tf::StampedTransform robot_to_human_transform;
         geometry_msgs::Twist robot_twist_in_humans_frame;
 
@@ -143,10 +252,12 @@
 
         if(transform_found)
         {
+            // get robot entity in humans frame
             hanp_head_behavior::Entity robot({robot_to_human_transform.getOrigin().getX(),
                 robot_to_human_transform.getOrigin().getY(),
                 robot_twist_in_humans_frame.linear.x, robot_twist_in_humans_frame.linear.y});
 
+            // caculate person with lowest time-to-collision with the robot
             double min_ttc = std::numeric_limits<double>::infinity();
             hanp_msgs::TrackedHuman human_with_min_ttc;
             for(auto tracked_human : tracked_humans.tracks)
@@ -165,20 +276,43 @@
 
             if(min_ttc < std::numeric_limits<double>::infinity())
             {
-                human_cost_point_ = new geometry_msgs::PoseStamped();
-                human_cost_point_->header.stamp = ros::Time::now();
-                human_cost_point_->header.frame_id = tracked_humans.header.frame_id;
-                human_cost_point_->pose = human_with_min_ttc.pose.pose;
+                // we found someone to look at
+                geometry_msgs::PointStamped human_cost_point;
+                human_cost_point.header.stamp = ros::Time::now();
+                human_cost_point.header.frame_id = tracked_humans.header.frame_id;
+                human_cost_point.point = human_with_min_ttc.pose.pose.position;
+
+                human_cost_func_->cost = 1.0;
+                human_cost_func_->point = human_cost_point;
+                human_cost_func_->looking_at_id = human_with_min_ttc.track_id;
+                human_cost_func_->looking_at_someone = true;
             }
             else
             {
-                human_cost_point_ = nullptr;
+                // there is no one to look at :(
+                human_cost_func_->cost = 0.0;
+                human_cost_func_->looking_at_someone = false;
             }
         }
     }
 
-    void HANPHeadBehavior::publishPointHead(geometry_msgs::PointStamped& point_head)
+    void HANPHeadBehavior::publishPointHead(const ros::TimerEvent& event)
     {
+        // get the fucntion with maximum cost
+        double max_cost = 0;
+        HANPHeadBehaviorCostFunc* max_cost_function = nullptr;
+        for (auto cost_funtion : cost_functions_)
+        {
+            if(cost_funtion->cost > max_cost)
+            {
+                max_cost = cost_funtion->cost;
+                max_cost_function = cost_funtion;
+            }
+        }
+
+        // get the point_head point for function with maximum cost
+        auto& point_head = max_cost_function->point;
+
         ROS_DEBUG("heading point: x=%f, y=%f, frame=%s", point_head.point.x,
             point_head.point.y, point_head.header.frame_id.c_str());
         point_head_pub_.publish(point_head);
