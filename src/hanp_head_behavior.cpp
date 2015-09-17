@@ -123,6 +123,7 @@ namespace hanp_head_behavior
         human_cost_func_->cost = config.human_func_cost;
 
         local_plan_max_delay_ = ros::Duration(config.local_plan_max_delay);
+        max_ttc_looking_ = config.max_ttc;
     }
 
     void HANPHeadBehavior::localPlanCB(const nav_msgs::Path& local_plan)
@@ -313,7 +314,7 @@ namespace hanp_head_behavior
                 }
             }
 
-            if(min_ttc < std::numeric_limits<double>::infinity())
+            if(min_ttc < max_ttc_looking_)
             {
                 // we found someone to look at
                 geometry_msgs::PointStamped human_cost_point;

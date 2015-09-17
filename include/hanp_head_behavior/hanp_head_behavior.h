@@ -110,6 +110,7 @@ namespace hanp_head_behavior
         ros::Time last_plan_recieve_time_;
         ros::Duration local_plan_max_delay_;
         std::vector<int> already_looked_at_;
+        double max_ttc_looking_;
 
         void publishPointHead(const ros::TimerEvent& event);
         double timeToCollision(hanp_head_behavior::Entity robot, hanp_head_behavior::Entity human);
