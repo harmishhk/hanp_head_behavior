@@ -107,6 +107,9 @@ namespace hanp_head_behavior
         hanp_head_behavior::PathCostFunc* path_cost_func_;
         hanp_head_behavior::HumanCostFunc* human_cost_func_;
         std::vector<hanp_head_behavior::HANPHeadBehaviorCostFunc*> cost_functions_;
+        ros::Time last_plan_recieve_time_;
+        ros::Duration local_plan_max_delay_;
+        std::vector<int> already_looked_at_;
 
         void publishPointHead(const ros::TimerEvent& event);
         double timeToCollision(hanp_head_behavior::Entity robot, hanp_head_behavior::Entity human);

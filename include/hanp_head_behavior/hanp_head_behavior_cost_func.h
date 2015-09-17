@@ -40,6 +40,7 @@ namespace hanp_head_behavior
     public:
         ~HANPHeadBehaviorCostFunc();
 
+        bool enable = false;
         double weight;
         double cost;
         geometry_msgs::PointStamped point;
