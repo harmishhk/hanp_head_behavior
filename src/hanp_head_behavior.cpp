@@ -124,6 +124,8 @@ namespace hanp_head_behavior
 
         local_plan_max_delay_ = ros::Duration(config.local_plan_max_delay);
         max_ttc_looking_ = config.max_ttc;
+
+        max_gma_ = config.max_gma;
     }
 
     void HANPHeadBehavior::localPlanCB(const nav_msgs::Path& local_plan)
@@ -371,10 +373,37 @@ namespace hanp_head_behavior
         {
             auto& point_head = max_cost_function->point;
 
-            // ROS_DEBUG_NAMED(NODE_NAME, "%s: heading point: x=%f, y=%f, frame=%s",
-            //     NODE_NAME, point_head.point.x, point_head.point.y,
-            //     point_head.header.frame_id.c_str());
-            point_head_pub_.publish(point_head);
+            // get pointing angle in base
+            int res;
+            try
+            {
+                std::string error_msg;
+                geometry_msgs::PointStamped point_head_in_base;
+                res = tf_.waitForTransform(robot_base_frame_, point_head.header.frame_id,
+                    ros::Time(0), ros::Duration(0.5), ros::Duration(0.01), &error_msg);
+                tf_.transformPoint(robot_base_frame_, point_head, point_head_in_base);
+
+                // check for gma limits
+                auto point_head_angle = atan2(point_head_in_base.point.y, point_head_in_base.point.x);
+                ROS_DEBUG_NAMED(NODE_NAME, "%s: calculated point head angle: %f", NODE_NAME, point_head_angle);
+                if(fabs(point_head_angle) > max_gma_)
+                {
+                    point_head.point.x = cos(max_gma_);
+                    point_head.point.y = std::copysign(sin(max_gma_), point_head_angle);
+                }
+                ROS_DEBUG_NAMED(NODE_NAME, "%s: heading point: x=%f, y=%f, frame=%s",
+                    NODE_NAME, point_head.point.x, point_head.point.y,
+                    point_head.header.frame_id.c_str());
+                    point_head_pub_.publish(point_head);
+            }
+            catch(const tf::ExtrapolationException &ex)
+            {
+                ROS_DEBUG("context_cost_function: cannot extrapolate transform");
+            }
+            catch(const tf::TransformException &ex)
+            {
+                ROS_ERROR("context_cost_function: transform failure (%d): %s", res, ex.what());
+            }
         }
     }
 
