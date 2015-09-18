@@ -237,20 +237,24 @@ namespace hanp_head_behavior
                     * transformed_human_tf).getOrigin();
                 auto head_pan_to_human_angle = atan2(human_pose_in_head_pan.getY(),
                     human_pose_in_head_pan.getX());
+                auto human_pose_in_robot_base = (robot_base_to_human_transform
+                    * transformed_human_tf).getOrigin();
+                auto robot_base_to_human_angle = atan2(human_pose_in_robot_base.getY(),
+                    human_pose_in_robot_base.getX());
 
                 if(fabs(head_pan_to_human_angle) < visibility_angle_)
                 {
                     // we have seen the human
                     human_cost_func_->enable = false;
-                    ROS_DEBUG_NAMED(NODE_NAME, "%s: we have seen human %d",
-                        NODE_NAME, looking_at.track_id);
+                    ROS_DEBUG_NAMED(NODE_NAME, "%s: we have seen human %d, angle: %f",
+                        NODE_NAME, looking_at.track_id, head_pan_to_human_angle);
                 }
-                else if(fabs(head_pan_to_human_angle) > max_gma_)
+                else if(fabs(robot_base_to_human_angle) > max_gma_)
                 {
                     // we won't be able to see human anymore / doesn't matter any more to look that human
                     human_cost_func_->enable = false;
-                    ROS_DEBUG_NAMED(NODE_NAME, "%s: we won't look at human %d anymore",
-                        NODE_NAME, looking_at.track_id);
+                    ROS_DEBUG_NAMED(NODE_NAME, "%s: we won't look at human %d anymore, angle: %f",
+                        NODE_NAME, looking_at.track_id, robot_base_to_human_angle);
                 }
                 else
                 {
@@ -265,8 +269,8 @@ namespace hanp_head_behavior
                     human_cost_func_->point = human_cost_point;
                     human_cost_func_->enable = true;
 
-                    ROS_INFO_NAMED(NODE_NAME, "%s: still looking at human %d, angle: %f",
-                        NODE_NAME, looking_at.track_id, head_pan_to_human_angle);
+                    ROS_DEBUG_NAMED(NODE_NAME, "%s: still looking at human %d, \npan-human angle: %f, \nbase-human angle: %f",
+                        NODE_NAME, looking_at.track_id, head_pan_to_human_angle, robot_base_to_human_angle);
                     return;
                 }
             }
@@ -344,15 +348,32 @@ namespace hanp_head_behavior
 
     void HANPHeadBehavior::publishPointHead(const ros::TimerEvent& event)
     {
-        // ROS_DEBUG_NAMED(NODE_NAME, "%s: going to publish point head", NODE_NAME);
+        // nothing to do when not moving
+        if(!path_cost_func_->enable)
+        {
+            return;
+        }
 
         // disable publishing if no plan has been received for long
-        if((ros::Time::now() - last_plan_recieve_time_) > local_plan_max_delay_)
+        auto now = ros::Time::now();
+        if((now - last_plan_recieve_time_) > local_plan_max_delay_)
         {
             already_looked_at_.clear();
             path_cost_func_->enable = false;
+
+            geometry_msgs::PointStamped point_head;
+            point_head.header.stamp = now;
+            point_head.header.frame_id = robot_base_frame_;
+            point_head.point.x = LOCAL_PLAN_END_EXTEND;
+            point_head.point.y = 0.0;
+            point_head.point.z = point_head_height_;
+            point_head_pub_.publish(point_head);
+
+            ROS_INFO_NAMED(NODE_NAME, "%s: we are not moving anymore, disabling head movements", NODE_NAME);
             return;
         }
+
+        // ROS_DEBUG_NAMED(NODE_NAME, "%s: going to publish point head", NODE_NAME);
 
         // get the fucntion with maximum cost
         double max_cost = 0;
@@ -383,11 +404,12 @@ namespace hanp_head_behavior
 
                 // check for gma limits
                 auto point_head_angle = atan2(point_head_in_base.point.y, point_head_in_base.point.x);
-                ROS_INFO_NAMED(NODE_NAME, "%s: calculated point head angle: %f", NODE_NAME, point_head_angle);
+                ROS_DEBUG_NAMED(NODE_NAME, "%s: calculated point head angle: %f", NODE_NAME, point_head_angle);
                 if(fabs(point_head_angle) > max_gma_)
                 {
-                    point_head.point.x = cos(max_gma_);
-                    point_head.point.y = std::copysign(sin(max_gma_), point_head_angle);
+                    point_head_in_base.point.x = cos(max_gma_);
+                    point_head_in_base.point.y = std::copysign(sin(max_gma_), point_head_angle);
+                    point_head = point_head_in_base;
                 }
                 ROS_DEBUG_NAMED(NODE_NAME, "%s: heading point: x=%f, y=%f, frame=%s",
                     NODE_NAME, point_head.point.x, point_head.point.y,
