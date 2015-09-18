@@ -71,7 +71,6 @@ namespace hanp_head_behavior
     public:
         HumanCostFunc();
 
-        bool looking_at_someone;
         int looking_at_id;
     };
 

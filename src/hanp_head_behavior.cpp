@@ -29,6 +29,7 @@
 
 // defining constants
 #define NODE_NAME "hanp_head_behavior"
+#define THROTTLE_TIME 4.0
 
 #define LOCAL_PLAN_SUB_TOPIC "local_plan"
 #define HUMAN_SUB_TOPIC "humans"
@@ -38,6 +39,7 @@
 #define PUBLISH_RATE 10
 #define VISIBILITY_ANGLE 0.087 //radian (5 degrees)
 #define LOCAL_PLAN_MAX_DELAY 4.0 // seconds
+#define LOCAL_PLAN_END_EXTEND 0.5 // meters
 
 #include <signal.h>
 
@@ -78,18 +80,17 @@ namespace hanp_head_behavior
         point_head_pub_ = private_nh.advertise<geometry_msgs::PointStamped>(point_head_pub_topic_, 1);
 
         // initialize publish timer
-        // create a publish timer
         if(publish_rate_ > 0.0)
         {
             publish_timer_ = private_nh.createTimer(ros::Duration(1.0 / publish_rate_),
                 &HANPHeadBehavior::publishPointHead, this);
-            ROS_INFO_NAMED(NODE_NAME, "publishing: %s at %d hz",
+            ROS_INFO_NAMED(NODE_NAME, "%s: will publish %s at %d hz", NODE_NAME,
                 point_head_pub_topic_.c_str(), publish_rate_);
         }
         else
         {
-            ROS_ERROR_NAMED(NODE_NAME, "%s: publish rate cannot be < 0,"
-                " nothing will be published", NODE_NAME);
+            ROS_ERROR_NAMED(NODE_NAME, "%s: publish rate (asked: %f hz) cannot be < 0, nothing will be published",
+                NODE_NAME, publish_rate_);
         }
 
         // initialize cost functions
@@ -103,7 +104,7 @@ namespace hanp_head_behavior
         dynamic_reconfigure::Server<HANPHeadBehaviorConfig>::CallbackType cb = boost::bind(&HANPHeadBehavior::reconfigureCB, this, _1, _2);
         dsrv_->setCallback(cb);
 
-        ROS_DEBUG_NAMED(NODE_NAME, "%s node initialized", NODE_NAME);
+        ROS_DEBUG_NAMED(NODE_NAME, "%s: node initialized", NODE_NAME);
     }
 
     void HANPHeadBehavior::reconfigureCB(HANPHeadBehaviorConfig &config, uint32_t level)
@@ -113,18 +114,16 @@ namespace hanp_head_behavior
         robot_base_frame_ = config.robot_base_frame;
         head_pan_frame_ = config.head_pan_frame;
 
+        publish_rate_ = config.publish_rate;
+
+        path_cost_func_->weight = config.path_func_weight;
+        human_cost_func_->weight = config.human_func_weight;
+
         point_head_height_ = config.point_head_height;
         ttc_collision_radius_ = config.ttc_collision_dist/2;
         visibility_angle_ = config.visibility_angle;
-
-        publish_rate_ = config.publish_rate;
-
-        path_cost_func_->cost = config.path_func_cost;
-        human_cost_func_->cost = config.human_func_cost;
-
         local_plan_max_delay_ = ros::Duration(config.local_plan_max_delay);
         max_ttc_looking_ = config.max_ttc;
-
         max_gma_ = config.max_gma;
     }
 
@@ -142,38 +141,79 @@ namespace hanp_head_behavior
         {
             tf::Pose local_plan_end;
             tf::poseMsgToTF(local_plan.poses.back().pose, local_plan_end);
-            auto local_plan_end_extended = local_plan_end(tf::Vector3(0.5,0,0)); //TODO: make this configurable
+            auto local_plan_end_extended = local_plan_end(tf::Vector3(LOCAL_PLAN_END_EXTEND,0.0,0.0));
             point_head.header.frame_id = local_plan.poses.back().header.frame_id;
             point_head.point.x = local_plan_end_extended.x();
             point_head.point.y = local_plan_end_extended.y();
             point_head.point.z = point_head_height_;
 
-            // ROS_DEBUG_NAMED(NODE_NAME, "head pointing to path");
+            // ROS_DEBUG_NAMED(NODE_NAME, "%s: head pointing to path", NODE_NAME);
         }
         // look in the front
         else
         {
             point_head.header.frame_id = robot_base_frame_;
-            point_head.point.x = 1.0;
+            point_head.point.x = LOCAL_PLAN_END_EXTEND;
             point_head.point.y = 0.0;
             point_head.point.z = point_head_height_;
 
-            // ROS_DEBUG_NAMED(NODE_NAME, "head pointing in the front");
+            // ROS_DEBUG_NAMED(NODE_NAME, "%s: head pointing in the front", NODE_NAME);
         }
 
-        path_cost_func_->enable = true;
         path_cost_func_->point = point_head;
+        path_cost_func_->cost = path_cost_func_->weight;
+        path_cost_func_->enable = true;
     }
 
     void HANPHeadBehavior::trackedHumansCB(const hanp_msgs::TrackedHumans& tracked_humans)
     {
         // ROS_DEBUG_NAMED(NODE_NAME, "%s: received tracked humans", NODE_NAME);
 
-        bool transform_found = false;
+        // don't care about humans when we are not moving
+        if(!path_cost_func_->enable)
+        {
+            return;
+        }
+
+        // get transforms between head_pan, robot_base and humans frame
         tf::StampedTransform head_pan_to_humans_transform;
+        tf::StampedTransform robot_base_to_human_transform;
+        geometry_msgs::Twist robot_twist_in_humans_frame;
+        int res;
+        std::string error_msg;
+        bool transforms_found = false;
+        try
+        {
+            res = tf_.waitForTransform(head_pan_frame_, tracked_humans.header.frame_id,
+                tracked_humans.header.stamp, ros::Duration(0.5), ros::Duration(0.01), &error_msg);
+            tf_.lookupTransform(head_pan_frame_, tracked_humans.header.frame_id,
+                tracked_humans.header.stamp, head_pan_to_humans_transform);
+            res = tf_.waitForTransform(robot_base_frame_, tracked_humans.header.frame_id,
+                tracked_humans.header.stamp, ros::Duration(0.5), ros::Duration(0.01), &error_msg);
+            tf_.lookupTransform(robot_base_frame_, tracked_humans.header.frame_id,
+                tracked_humans.header.stamp, robot_base_to_human_transform);
+            tf_.lookupTwist(robot_base_frame_, tracked_humans.header.frame_id,
+                tracked_humans.header.stamp, ros::Duration(0.1), robot_twist_in_humans_frame);
+            transforms_found = true;
+        }
+        catch(const tf::ExtrapolationException &ex)
+        {
+            ROS_DEBUG_NAMED(NODE_NAME, "%s: cannot extrapolate transform from %s to %s, error: %d",
+                NODE_NAME, tracked_humans.header.frame_id.c_str(), head_pan_frame_.c_str(), res);
+        }
+        catch(const tf::TransformException &ex)
+        {
+            ROS_ERROR_NAMED(NODE_NAME, "%s: transform failure (%d): %s", NODE_NAME, res, ex.what());
+        }
+
+        if(!transforms_found)
+        {
+            //TODO: what to do when transform are not found
+            return;
+        }
 
         // check if we are already looking at human
-        if(human_cost_func_->looking_at_someone)
+        if(human_cost_func_->enable)
         {
             // get the person we are looking at
             hanp_msgs::TrackedHuman looking_at;
@@ -186,69 +226,54 @@ namespace hanp_head_behavior
                     break;
                 }
             }
+
             // to whom we were looking at is still detected
             if(looking_at.track_id != 0)
             {
-                // get transform between head_pan and humans frame
-                int res;
-                std::string error_msg;
-                try
-                {
-                    res = tf_.waitForTransform(head_pan_frame_, tracked_humans.header.frame_id,
-                        tracked_humans.header.stamp, ros::Duration(0.5), ros::Duration(0.01), &error_msg);
-                    tf_.lookupTransform(head_pan_frame_, tracked_humans.header.frame_id,
-                        tracked_humans.header.stamp, head_pan_to_humans_transform);
-                    transform_found = true;
-                }
-                catch(const tf::ExtrapolationException &ex)
-                {
-                    ROS_DEBUG_NAMED(NODE_NAME, "%s: cannot extrapolate transform from %s to %s, error: %d",
-                        NODE_NAME, tracked_humans.header.frame_id.c_str(), head_pan_frame_.c_str(), res);
-                }
-                catch(const tf::TransformException &ex)
-                {
-                    ROS_ERROR_NAMED(NODE_NAME, "%s: transform failure (%d): %s", NODE_NAME, res, ex.what());
-                }
+                // get human whom we are looking at in head_pan frame
+                tf::Pose transformed_human_tf;
+                tf::poseMsgToTF(looking_at.pose.pose, transformed_human_tf);
+                auto human_pose_in_head_pan = (head_pan_to_humans_transform
+                    * transformed_human_tf).getOrigin();
+                auto head_pan_to_human_angle = atan2(human_pose_in_head_pan.getY(),
+                    human_pose_in_head_pan.getX());
 
-                if(transform_found)
+                if(fabs(head_pan_to_human_angle) < visibility_angle_)
                 {
-                    // get human whom we are looking at in head_pan frame
-                    tf::Pose transformed_human_tf;
-                    tf::poseMsgToTF(looking_at.pose.pose, transformed_human_tf);
-                    auto human_pose_in_head_pan = (head_pan_to_humans_transform
-                        * transformed_human_tf).getOrigin();
+                    // we have seen the human
+                    human_cost_func_->enable = false;
+                    ROS_DEBUG_NAMED(NODE_NAME, "%s: we have seen human %d",
+                        NODE_NAME, looking_at.track_id);
+                }
+                else if(fabs(head_pan_to_human_angle) > max_gma_)
+                {
+                    // we won't be able to see human anymore / doesn't matter any more to look that human
+                    human_cost_func_->enable = false;
+                    ROS_DEBUG_NAMED(NODE_NAME, "%s: we won't look at human %d anymore",
+                        NODE_NAME, looking_at.track_id);
+                }
+                else
+                {
+                    // update the looking point with new human position
+                    geometry_msgs::PointStamped human_cost_point;
+                    human_cost_point.header.stamp = ros::Time::now();
+                    human_cost_point.header.frame_id = head_pan_frame_;
+                    human_cost_point.point.x = human_pose_in_head_pan.getX();
+                    human_cost_point.point.y = human_pose_in_head_pan.getY();
 
-                    // check if human is already in visibility range
-                    auto head_pan_to_human_angle = atan2(human_pose_in_head_pan.getX(),
-                        human_pose_in_head_pan.getY());
-                    if(fabs(head_pan_to_human_angle) < visibility_angle_)
-                    {
-                        human_cost_func_->enable = false;
-                        human_cost_func_->looking_at_someone = false;
-                        ROS_DEBUG_NAMED(NODE_NAME, "%s we have seen human %d",
-                            NODE_NAME, looking_at.track_id);
-                    }
-                    else
-                    {
-                        // update the looking point with new human position
-                        geometry_msgs::PointStamped human_cost_point;
-                        human_cost_point.header.stamp = ros::Time::now();
-                        human_cost_point.header.frame_id = head_pan_frame_;
-                        human_cost_point.point.x = human_pose_in_head_pan.getX();
-                        human_cost_point.point.y = human_pose_in_head_pan.getY();
+                    human_cost_func_->cost = human_cost_func_->weight;
+                    human_cost_func_->point = human_cost_point;
+                    human_cost_func_->enable = true;
 
-                        human_cost_func_->enable = true;
-                        human_cost_func_->point = human_cost_point;
-                        ROS_DEBUG_NAMED(NODE_NAME, "%s still looking at human %d, angle: %f",
-                            NODE_NAME, looking_at.track_id, head_pan_to_human_angle);
-                        return;
-                    }
+                    ROS_INFO_NAMED(NODE_NAME, "%s: still looking at human %d, angle: %f",
+                        NODE_NAME, looking_at.track_id, head_pan_to_human_angle);
+                    return;
                 }
             }
-            // we lost the human whom we were looking at
             else
             {
-                ROS_DEBUG_NAMED(NODE_NAME, "%s we lost human %d, whom we were looking at",
+                // we lost the human whom we were looking at
+                ROS_DEBUG_NAMED(NODE_NAME, "%s: we lost human %d, whom we were looking at",
                     NODE_NAME, looking_at.track_id);
                 //TODO: dedice whether to keep looking at persons last knows position until we finish, and implement here
             }
@@ -256,93 +281,64 @@ namespace hanp_head_behavior
 
         // we are her if we are currently not looking at anyone or we lost whom we were looking at
 
-        // get robot pose in frame of humans
-        tf::StampedTransform robot_to_human_transform;
-        geometry_msgs::Twist robot_twist_in_humans_frame;
+        // get robot entity in humans frame
+        hanp_head_behavior::Entity robot({robot_base_to_human_transform.getOrigin().getX(),
+            robot_base_to_human_transform.getOrigin().getY(),
+            robot_twist_in_humans_frame.linear.x, robot_twist_in_humans_frame.linear.y});
 
-        int res;
-        std::string error_msg;
-        try
+        // caculate person with lowest time-to-collision with the robot
+        double min_ttc = std::numeric_limits<double>::infinity();
+        hanp_msgs::TrackedHuman human_with_min_ttc;
+        for(auto tracked_human : tracked_humans.tracks)
         {
-            res = tf_.waitForTransform(robot_base_frame_, tracked_humans.header.frame_id,
-                tracked_humans.header.stamp, ros::Duration(0.5), ros::Duration(0.01), &error_msg);
-            tf_.lookupTransform(robot_base_frame_, tracked_humans.header.frame_id,
-                tracked_humans.header.stamp, robot_to_human_transform);
-            tf_.lookupTwist(robot_base_frame_, tracked_humans.header.frame_id,
-                tracked_humans.header.stamp, ros::Duration(0.1), robot_twist_in_humans_frame);
-            transform_found = true;
-        }
-        catch(const tf::ExtrapolationException &ex)
-        {
-            ROS_DEBUG_NAMED(NODE_NAME, "%s: cannot extrapolate transform from %s to %s, error: %d",
-                NODE_NAME, tracked_humans.header.frame_id.c_str(), robot_base_frame_.c_str(), res);
-        }
-        catch(const tf::TransformException &ex)
-        {
-            ROS_ERROR_NAMED(NODE_NAME, "%s: transform failure (%d): %s", NODE_NAME, res, ex.what());
-        }
-
-        if(transform_found)
-        {
-            // get robot entity in humans frame
-            hanp_head_behavior::Entity robot({robot_to_human_transform.getOrigin().getX(),
-                robot_to_human_transform.getOrigin().getY(),
-                robot_twist_in_humans_frame.linear.x, robot_twist_in_humans_frame.linear.y});
-
-            // caculate person with lowest time-to-collision with the robot
-            double min_ttc = std::numeric_limits<double>::infinity();
-            hanp_msgs::TrackedHuman human_with_min_ttc;
-            for(auto tracked_human : tracked_humans.tracks)
+            // nothing to do if we have already looked at this person
+            if(std::find(already_looked_at_.begin(), already_looked_at_.end(),
+                tracked_human.track_id) != already_looked_at_.end())
             {
-                // nothing to do if we have already looked at this person
-                if(std::find(already_looked_at_.begin(), already_looked_at_.end(),
-                    tracked_human.track_id) != already_looked_at_.end())
-                {
-                    ROS_DEBUG_NAMED(NODE_NAME, "%s: we have already looked at human %d, continueing",
-                        NODE_NAME, tracked_human.track_id);
-                    continue;
-                }
-
-                hanp_head_behavior::Entity human({tracked_human.pose.pose.position.x,
-                    tracked_human.pose.pose.position.y, tracked_human.twist.twist.linear.x,
-                    tracked_human.twist.twist.linear.y});
-
-                auto ttc = timeToCollision(human, robot);
-                // ROS_DEBUG_NAMED(NODE_NAME, "%s: ttc for human %d: %f",
-                //     NODE_NAME, tracked_human.track_id, ttc);
-                if(ttc < min_ttc)
-                {
-                    min_ttc = ttc;
-                    human_with_min_ttc = tracked_human;
-                }
+                ROS_DEBUG_NAMED(NODE_NAME, "%s: we have already looked at human %d, continueing",
+                    NODE_NAME, tracked_human.track_id);
+                continue;
             }
 
-            if(min_ttc < max_ttc_looking_)
+            hanp_head_behavior::Entity human({tracked_human.pose.pose.position.x,
+                tracked_human.pose.pose.position.y, tracked_human.twist.twist.linear.x,
+                tracked_human.twist.twist.linear.y});
+
+            auto ttc = timeToCollision(human, robot);
+            ttc = 1.0; //TODO: remove this after tests
+            // ROS_DEBUG_NAMED(NODE_NAME, "%s: ttc for human %d: %f", NODE_NAME,
+            //     tracked_human.track_id, ttc);
+            if(ttc < min_ttc)
             {
-                // we found someone to look at
-                geometry_msgs::PointStamped human_cost_point;
-                human_cost_point.header.stamp = ros::Time::now();
-                human_cost_point.header.frame_id = tracked_humans.header.frame_id;
-                human_cost_point.point = human_with_min_ttc.pose.pose.position;
-
-                human_cost_func_->enable = true;
-                human_cost_func_->point = human_cost_point;
-                human_cost_func_->looking_at_id = human_with_min_ttc.track_id;
-                human_cost_func_->looking_at_someone = true;
-
-                already_looked_at_.push_back(human_with_min_ttc.track_id);
-
-                ROS_DEBUG_NAMED(NODE_NAME, "%s: looking at human %d", NODE_NAME,
-                    human_with_min_ttc.track_id);
+                min_ttc = ttc;
+                human_with_min_ttc = tracked_human;
             }
-            else
-            {
-                // there is no one to look at :(
-                ROS_DEBUG_THROTTLE_NAMED(5, NODE_NAME, "%s: there is no one to look at :(",
-                    NODE_NAME);
-                human_cost_func_->enable = false;
-                human_cost_func_->looking_at_someone = false;
-            }
+        }
+
+        if(min_ttc < max_ttc_looking_)
+        {
+            // we found someone to look at
+            geometry_msgs::PointStamped human_cost_point;
+            human_cost_point.header.stamp = ros::Time::now();
+            human_cost_point.header.frame_id = tracked_humans.header.frame_id;
+            human_cost_point.point = human_with_min_ttc.pose.pose.position;
+
+            human_cost_func_->point = human_cost_point;
+            human_cost_func_->cost = human_cost_func_->weight;
+            human_cost_func_->looking_at_id = human_with_min_ttc.track_id;
+            human_cost_func_->enable = true;
+
+            already_looked_at_.push_back(human_with_min_ttc.track_id);
+
+            // ROS_DEBUG_NAMED(NODE_NAME, "%s: looking at human %d", NODE_NAME,
+            //     human_with_min_ttc.track_id);
+        }
+        else
+        {
+            // there is no one to look at :(
+            ROS_DEBUG_THROTTLE_NAMED(THROTTLE_TIME, NODE_NAME, "%s: there is no one to look at :(",
+                NODE_NAME);
+            human_cost_func_->enable = false;
         }
     }
 
@@ -354,6 +350,7 @@ namespace hanp_head_behavior
         if((ros::Time::now() - last_plan_recieve_time_) > local_plan_max_delay_)
         {
             already_looked_at_.clear();
+            path_cost_func_->enable = false;
             return;
         }
 
@@ -386,15 +383,15 @@ namespace hanp_head_behavior
 
                 // check for gma limits
                 auto point_head_angle = atan2(point_head_in_base.point.y, point_head_in_base.point.x);
-                // ROS_DEBUG_NAMED(NODE_NAME, "%s: calculated point head angle: %f", NODE_NAME, point_head_angle);
+                ROS_INFO_NAMED(NODE_NAME, "%s: calculated point head angle: %f", NODE_NAME, point_head_angle);
                 if(fabs(point_head_angle) > max_gma_)
                 {
                     point_head.point.x = cos(max_gma_);
                     point_head.point.y = std::copysign(sin(max_gma_), point_head_angle);
                 }
-                // ROS_DEBUG_NAMED(NODE_NAME, "%s: heading point: x=%f, y=%f, frame=%s",
-                //     NODE_NAME, point_head.point.x, point_head.point.y,
-                //     point_head.header.frame_id.c_str());
+                ROS_DEBUG_NAMED(NODE_NAME, "%s: heading point: x=%f, y=%f, frame=%s",
+                    NODE_NAME, point_head.point.x, point_head.point.y,
+                    point_head.header.frame_id.c_str());
                     point_head_pub_.publish(point_head);
             }
             catch(const tf::ExtrapolationException &ex)
@@ -420,7 +417,8 @@ namespace hanp_head_behavior
         // check for already in collision
         if (c.norm() < 2*r)
         {
-            ROS_DEBUG_NAMED(NODE_NAME, "time-to-collision: human and robot are already in collision");
+            ROS_DEBUG_NAMED(NODE_NAME, "%s: time-to-collision: human and robot are "
+                "already in collision", NODE_NAME);
             return 0.0;
         }
 
@@ -450,7 +448,7 @@ namespace hanp_head_behavior
 // handler for something to do before killing the node
 void sigintHandler(int sig)
 {
-    ROS_DEBUG_STREAM_NAMED(NODE_NAME, "node will now shutdown");
+    ROS_DEBUG_NAMED(NODE_NAME, "%s: node will now shutdown", NODE_NAME);
 
     // the default sigint handler, it calls shutdown() on node
     ros::shutdown();
@@ -461,7 +459,7 @@ int main(int argc, char **argv)
 {
     // starting the optotrack_person node
     ros::init(argc, argv, NODE_NAME);
-    ROS_DEBUG_STREAM_NAMED(NODE_NAME, "started " << NODE_NAME << " node");
+    ROS_DEBUG_NAMED(NODE_NAME, "started %s node", NODE_NAME);
 
     // initiazling HANPHeadBehavior class
     hanp_head_behavior::HANPHeadBehavior HANPHeadBehavior;
