@@ -27,24 +27,29 @@
  *                                  Harmish Khambhaita on Tue Sep 15 2015
  */
 
-#ifndef HANP_HEAD_BEHAVIOR_COST_FUNC_H_
-#define HANP_HEAD_BEHAVIOR_COST_FUNC_H_
+#ifndef HANP_HEAD_BEHAVIOR_UTIL_FUNC_H_
+#define HANP_HEAD_BEHAVIOR_UTIL_FUNC_H_
 
 #include <ros/ros.h>
 #include <geometry_msgs/PointStamped.h>
 
 namespace hanp_head_behavior
 {
-    class HANPHeadBehaviorCostFunc
+    struct Point
+    {
+        double utility;
+        geometry_msgs::PointStamped point;
+    };
+
+    class HANPHeadBehaviorUtilFunc
     {
     public:
-        ~HANPHeadBehaviorCostFunc();
+        ~HANPHeadBehaviorUtilFunc();
 
         bool enable = false;
         double weight;
-        double cost;
-        geometry_msgs::PointStamped point;
+        hanp_head_behavior::Point point;
     };
 }
 
-#endif // HANP_HEAD_BEHAVIOR_COST_FUNC_H_
+#endif // HANP_HEAD_BEHAVIOR_UTIL_FUNC_H_

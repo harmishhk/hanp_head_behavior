@@ -32,7 +32,7 @@
 
 #include <ros/ros.h>
 
-#include <hanp_head_behavior/hanp_head_behavior_cost_func.h>
+#include <hanp_head_behavior/hanp_head_behavior_util_func.h>
 
 #include <dynamic_reconfigure/server.h>
 #include <hanp_head_behavior/HANPHeadBehaviorConfig.h>
@@ -60,16 +60,16 @@ namespace hanp_head_behavior
             vx(entity[2]), vy(entity[3]) {};
     };
 
-    class PathCostFunc : public HANPHeadBehaviorCostFunc
+    class PathUtilFunc : public HANPHeadBehaviorUtilFunc
     {
     public:
-        PathCostFunc();
+        PathUtilFunc();
     };
 
-    class HumanCostFunc : public HANPHeadBehaviorCostFunc
+    class HumanUtilFunc : public HANPHeadBehaviorUtilFunc
     {
     public:
-        HumanCostFunc();
+        HumanUtilFunc();
 
         int looking_at_id;
     };
@@ -103,9 +103,9 @@ namespace hanp_head_behavior
         int publish_rate_;
         double ttc_collision_radius_, point_head_height_, visibility_angle_;
 
-        hanp_head_behavior::PathCostFunc* path_cost_func_;
-        hanp_head_behavior::HumanCostFunc* human_cost_func_;
-        std::vector<hanp_head_behavior::HANPHeadBehaviorCostFunc*> cost_functions_;
+        hanp_head_behavior::PathUtilFunc* path_util_func_;
+        hanp_head_behavior::HumanUtilFunc* human_util_func_;
+        std::vector<hanp_head_behavior::HANPHeadBehaviorUtilFunc*> util_funcs_;
         ros::Time last_plan_recieve_time_;
         ros::Duration local_plan_max_delay_;
         std::vector<int> already_looked_at_;

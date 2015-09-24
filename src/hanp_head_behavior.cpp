@@ -51,8 +51,8 @@ namespace hanp_head_behavior
     HANPHeadBehavior::HANPHeadBehavior() {}
     HANPHeadBehavior::~HANPHeadBehavior() {}
 
-    PathCostFunc::PathCostFunc() {}
-    HumanCostFunc::HumanCostFunc() {}
+    PathUtilFunc::PathUtilFunc() {}
+    HumanUtilFunc::HumanUtilFunc() {}
 
     void HANPHeadBehavior::initialize()
     {
@@ -93,11 +93,11 @@ namespace hanp_head_behavior
                 NODE_NAME, publish_rate_);
         }
 
-        // initialize cost functions
-        path_cost_func_ = new hanp_head_behavior::PathCostFunc();
-        cost_functions_.push_back(path_cost_func_);
-        human_cost_func_ = new hanp_head_behavior::HumanCostFunc();
-        cost_functions_.push_back(human_cost_func_);
+        // initialize utility functions
+        path_util_func_ = new hanp_head_behavior::PathUtilFunc();
+        util_funcs_.push_back(path_util_func_);
+        human_util_func_ = new hanp_head_behavior::HumanUtilFunc();
+        util_funcs_.push_back(human_util_func_);
 
         // set-up dynamic reconfigure
         dsrv_ = new dynamic_reconfigure::Server<HANPHeadBehaviorConfig>(private_nh);
@@ -116,8 +116,8 @@ namespace hanp_head_behavior
 
         publish_rate_ = config.publish_rate;
 
-        path_cost_func_->weight = config.path_func_weight;
-        human_cost_func_->weight = config.human_func_weight;
+        path_util_func_->weight = config.path_func_weight;
+        human_util_func_->weight = config.human_func_weight;
 
         point_head_height_ = config.point_head_height;
         ttc_collision_radius_ = config.ttc_collision_dist/2;
@@ -133,8 +133,8 @@ namespace hanp_head_behavior
 
         last_plan_recieve_time_ = ros::Time::now();
 
-        geometry_msgs::PointStamped point_head;
-        point_head.header.stamp = ros::Time::now();
+        hanp_head_behavior::Point point_head;
+        point_head.point.header.stamp = ros::Time::now();
 
         // look at the end of the local plan
         if(local_plan.poses.size() > 0)
@@ -142,27 +142,28 @@ namespace hanp_head_behavior
             tf::Pose local_plan_end;
             tf::poseMsgToTF(local_plan.poses.back().pose, local_plan_end);
             auto local_plan_end_extended = local_plan_end(tf::Vector3(LOCAL_PLAN_END_EXTEND,0.0,0.0));
-            point_head.header.frame_id = local_plan.poses.back().header.frame_id;
-            point_head.point.x = local_plan_end_extended.x();
-            point_head.point.y = local_plan_end_extended.y();
-            point_head.point.z = point_head_height_;
+            point_head.point.header.frame_id = local_plan.poses.back().header.frame_id;
+            point_head.point.point.x = local_plan_end_extended.x();
+            point_head.point.point.y = local_plan_end_extended.y();
+            point_head.point.point.z = point_head_height_;
+            point_head.utility = 1.0;
 
             // ROS_DEBUG_NAMED(NODE_NAME, "%s: head pointing to path", NODE_NAME);
         }
         // look in the front
         else
         {
-            point_head.header.frame_id = robot_base_frame_;
-            point_head.point.x = LOCAL_PLAN_END_EXTEND;
-            point_head.point.y = 0.0;
-            point_head.point.z = point_head_height_;
+            point_head.point.header.frame_id = robot_base_frame_;
+            point_head.point.point.x = LOCAL_PLAN_END_EXTEND;
+            point_head.point.point.y = 0.0;
+            point_head.point.point.z = point_head_height_;
+            point_head.utility = 1.0;
 
             // ROS_DEBUG_NAMED(NODE_NAME, "%s: head pointing in the front", NODE_NAME);
         }
 
-        path_cost_func_->point = point_head;
-        path_cost_func_->cost = path_cost_func_->weight;
-        path_cost_func_->enable = true;
+        path_util_func_->point = point_head;
+        path_util_func_->enable = true;
     }
 
     void HANPHeadBehavior::trackedHumansCB(const hanp_msgs::TrackedHumans& tracked_humans)
@@ -170,7 +171,7 @@ namespace hanp_head_behavior
         // ROS_DEBUG_NAMED(NODE_NAME, "%s: received tracked humans", NODE_NAME);
 
         // don't care about humans when we are not moving
-        if(!path_cost_func_->enable)
+        if(!path_util_func_->enable)
         {
             return;
         }
@@ -213,14 +214,14 @@ namespace hanp_head_behavior
         }
 
         // check if we are already looking at human
-        if(human_cost_func_->enable)
+        if(human_util_func_->enable)
         {
             // get the person we are looking at
             hanp_msgs::TrackedHuman looking_at;
             looking_at.track_id = 0;
             for(auto tracked_human : tracked_humans.tracks)
             {
-                if(tracked_human.track_id == human_cost_func_->looking_at_id)
+                if(tracked_human.track_id == human_util_func_->looking_at_id)
                 {
                     looking_at = tracked_human;
                     break;
@@ -245,29 +246,29 @@ namespace hanp_head_behavior
                 if(fabs(head_pan_to_human_angle) < visibility_angle_)
                 {
                     // we have seen the human
-                    human_cost_func_->enable = false;
+                    human_util_func_->enable = false;
                     ROS_DEBUG_NAMED(NODE_NAME, "%s: we have seen human %d, angle: %f",
                         NODE_NAME, looking_at.track_id, head_pan_to_human_angle);
                 }
                 else if(fabs(robot_base_to_human_angle) > max_gma_)
                 {
                     // we won't be able to see human anymore / doesn't matter any more to look that human
-                    human_cost_func_->enable = false;
+                    human_util_func_->enable = false;
                     ROS_DEBUG_NAMED(NODE_NAME, "%s: we won't look at human %d anymore, angle: %f",
                         NODE_NAME, looking_at.track_id, robot_base_to_human_angle);
                 }
                 else
                 {
                     // update the looking point with new human position
-                    geometry_msgs::PointStamped human_cost_point;
-                    human_cost_point.header.stamp = ros::Time::now();
-                    human_cost_point.header.frame_id = head_pan_frame_;
-                    human_cost_point.point.x = human_pose_in_head_pan.getX();
-                    human_cost_point.point.y = human_pose_in_head_pan.getY();
+                    hanp_head_behavior::Point human_point;
+                    human_point.point.header.stamp = ros::Time::now();
+                    human_point.point.header.frame_id = head_pan_frame_;
+                    human_point.point.point.x = human_pose_in_head_pan.getX();
+                    human_point.point.point.y = human_pose_in_head_pan.getY();
+                    human_point.utility = 1.0;
 
-                    human_cost_func_->cost = human_cost_func_->weight;
-                    human_cost_func_->point = human_cost_point;
-                    human_cost_func_->enable = true;
+                    human_util_func_->point = human_point;
+                    human_util_func_->enable = true;
 
                     ROS_DEBUG_NAMED(NODE_NAME, "%s: still looking at human %d, \npan-human angle: %f, \nbase-human angle: %f",
                         NODE_NAME, looking_at.track_id, head_pan_to_human_angle, robot_base_to_human_angle);
@@ -322,15 +323,15 @@ namespace hanp_head_behavior
         if(min_ttc < max_ttc_looking_)
         {
             // we found someone to look at
-            geometry_msgs::PointStamped human_cost_point;
-            human_cost_point.header.stamp = ros::Time::now();
-            human_cost_point.header.frame_id = tracked_humans.header.frame_id;
-            human_cost_point.point = human_with_min_ttc.pose.pose.position;
+            hanp_head_behavior::Point human_point;
+            human_point.point.header.stamp = ros::Time::now();
+            human_point.point.header.frame_id = tracked_humans.header.frame_id;
+            human_point.point.point = human_with_min_ttc.pose.pose.position;
+            human_point.utility = 1.0;
 
-            human_cost_func_->point = human_cost_point;
-            human_cost_func_->cost = human_cost_func_->weight;
-            human_cost_func_->looking_at_id = human_with_min_ttc.track_id;
-            human_cost_func_->enable = true;
+            human_util_func_->point = human_point;
+            human_util_func_->looking_at_id = human_with_min_ttc.track_id;
+            human_util_func_->enable = true;
 
             already_looked_at_.push_back(human_with_min_ttc.track_id);
 
@@ -342,14 +343,14 @@ namespace hanp_head_behavior
             // there is no one to look at :(
             ROS_DEBUG_THROTTLE_NAMED(THROTTLE_TIME, NODE_NAME, "%s: there is no one to look at :(",
                 NODE_NAME);
-            human_cost_func_->enable = false;
+            human_util_func_->enable = false;
         }
     }
 
     void HANPHeadBehavior::publishPointHead(const ros::TimerEvent& event)
     {
         // nothing to do when not moving
-        if(!path_cost_func_->enable)
+        if(!path_util_func_->enable)
         {
             return;
         }
@@ -359,7 +360,7 @@ namespace hanp_head_behavior
         if((now - last_plan_recieve_time_) > local_plan_max_delay_)
         {
             already_looked_at_.clear();
-            path_cost_func_->enable = false;
+            path_util_func_->enable = false;
 
             geometry_msgs::PointStamped point_head;
             point_head.header.stamp = now;
@@ -375,22 +376,22 @@ namespace hanp_head_behavior
 
         // ROS_DEBUG_NAMED(NODE_NAME, "%s: going to publish point head", NODE_NAME);
 
-        // get the fucntion with maximum cost
-        double max_cost = 0;
-        HANPHeadBehaviorCostFunc* max_cost_function = nullptr;
-        for (auto cost_funtion : cost_functions_)
+        // get the fucntion with maximum weight
+        double max_weight = 0;
+        HANPHeadBehaviorUtilFunc* max_weight_func = nullptr;
+        for (auto util_func : util_funcs_)
         {
-            if(cost_funtion->enable && (cost_funtion->cost > max_cost))
+            if(util_func->enable && (util_func->weight > max_weight))
             {
-                max_cost = cost_funtion->cost;
-                max_cost_function = cost_funtion;
+                max_weight = util_func->weight;
+                max_weight_func = util_func;
             }
         }
 
-        // get the point_head point for function with maximum cost
-        if(max_cost_function)
+        // get the point_head point for function with maximum weight
+        if(max_weight_func)
         {
-            auto& point_head = max_cost_function->point;
+            auto& point_head = max_weight_func->point.point;
 
             // get pointing angle in base
             int res;
