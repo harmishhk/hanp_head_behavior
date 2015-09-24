@@ -287,9 +287,9 @@ namespace hanp_head_behavior
         // we are her if we are currently not looking at anyone or we lost whom we were looking at
 
         // get robot entity in humans frame
-        hanp_head_behavior::Entity robot({robot_base_to_human_transform.getOrigin().getX(),
-            robot_base_to_human_transform.getOrigin().getY(),
-            robot_twist_in_humans_frame.linear.x, robot_twist_in_humans_frame.linear.y});
+        hanp_head_behavior::Entity robot(robot_base_to_human_transform.getOrigin().getX(),
+            robot_base_to_human_transform.getOrigin().getY(), robot_twist_in_humans_frame.linear.x,
+            robot_twist_in_humans_frame.linear.y, ttc_collision_radius_);
 
         // caculate person with lowest time-to-collision with the robot
         double min_ttc = std::numeric_limits<double>::infinity();
@@ -305,9 +305,9 @@ namespace hanp_head_behavior
                 continue;
             }
 
-            hanp_head_behavior::Entity human({tracked_human.pose.pose.position.x,
+            hanp_head_behavior::Entity human(tracked_human.pose.pose.position.x,
                 tracked_human.pose.pose.position.y, tracked_human.twist.twist.linear.x,
-                tracked_human.twist.twist.linear.y});
+                tracked_human.twist.twist.linear.y, ttc_collision_radius_);
 
             auto ttc = timeToCollision(human, robot);
             ttc = 1.0; //TODO: remove this after tests
@@ -432,35 +432,41 @@ namespace hanp_head_behavior
     // calculates time-to-collision from entity robot to human
     double HANPHeadBehavior::timeToCollision(hanp_head_behavior::Entity human, hanp_head_behavior::Entity robot)
     {
-        auto r = ttc_collision_radius_;
+        auto r_sum = human.r_ + robot.r_;
 
         // c is vector from robot to human
-        auto c = Eigen::Vector2d(robot.x - human.x, robot.y - human.y);
+        auto c = Eigen::Vector2d(robot.x_ - human.x_, robot.y_ - human.y_);
 
         // check for already in collision
-        if (c.norm() < 2*r)
+        if (c.norm() < r_sum)
         {
             ROS_DEBUG_NAMED(NODE_NAME, "%s: time-to-collision: human and robot are "
                 "already in collision", NODE_NAME);
             return 0.0;
         }
 
-        // v is the velocity of p1 considering p2 steady, in global co-ordinate frame
-        auto v = Eigen::Vector2d(human.vx - robot.vx, human.vy - robot.vy);
+        // v is the velocity of human considering robot steady
+        auto v = Eigen::Vector2d(human.vx_ - robot.vx_, human.vy_ - robot.vy_);
 
-        auto c_dot_v = c.dot(v);
-        auto c_sq = c.squaredNorm();
-        auto v_sq = v.squaredNorm();
-        auto r_sq = r * r;
-        auto f = (c_dot_v * c_dot_v) - (v_sq * (c_sq - r_sq));
+        auto v_dot_c = v.dot(c);
 
-        if(f > 0)
+        // check if human is moving towards robot
+        if(v_dot_c > 0.0)
         {
-            // ttc is calculated using t = ( V.C - sqrt((V.C)^2 - ||V||^2 (||C||^2 - r^2)) ) / ||V||^2
-            auto ttc = (c_dot_v - std::sqrt(f)) / v_sq;
-            if(ttc > 0)
+            auto c_sq = c.squaredNorm();
+            auto v_sq = v.squaredNorm();
+            auto r_sum_sq = r_sum * r_sum;
+            auto f = (v_dot_c * v_dot_c) - (v_sq * (c_sq - r_sum_sq ));
+
+            // check validity of f before square root calculation
+            if(f > 0.0)
             {
-                return ttc;
+                // ttc is calculated using t = ( V.C - sqrt( (V.C)^2 - ||V||^2 (||C||^2 - r_sum^2 )) ) / ||V||^2
+                auto ttc = (v_dot_c - std::sqrt(f)) / v_sq;
+                if(ttc > 0.0)
+                {
+                    return ttc;
+                }
             }
         }
 

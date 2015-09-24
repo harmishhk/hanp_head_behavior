@@ -48,16 +48,13 @@ namespace hanp_head_behavior
 {
     struct Entity
     {
-    private:
-        Eigen::Vector4d entity;
     public:
-        double& x;
-        double& y;
-        double& vx;
-        double& vy;
-
-        Entity(Eigen::Vector4d entity) : entity(entity), x(entity[0]), y(entity[1]),
-            vx(entity[2]), vy(entity[3]) {};
+        Entity(double x, double y, double vx, double vy, double r) : x_(x), y_(y), vx_(vx), vy_(vy), r_(r) {};
+        double x_;
+        double y_;
+        double vx_;
+        double vy_;
+        double r_;
     };
 
     class PathUtilFunc : public HANPHeadBehaviorUtilFunc
