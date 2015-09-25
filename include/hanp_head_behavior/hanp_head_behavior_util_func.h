@@ -27,29 +27,44 @@
  *                                  Harmish Khambhaita on Tue Sep 15 2015
  */
 
-#ifndef HANP_HEAD_BEHAVIOR_UTIL_FUNC_H_
-#define HANP_HEAD_BEHAVIOR_UTIL_FUNC_H_
+#ifndef HANP_HEAD_BEHAVIOR_FUNC_H_
+#define HANP_HEAD_BEHAVIOR_FUNC_H_
 
 #include <ros/ros.h>
 #include <geometry_msgs/PointStamped.h>
 
 namespace hanp_head_behavior
 {
-    struct Point
+    enum class SocialContextType : int {Aliveness, Interaction, SocialAttention, IntentProjection};
+    const SocialContextType SocialContext[] =
     {
-        double utility;
-        geometry_msgs::PointStamped point;
+        SocialContextType::Aliveness,
+        SocialContextType::Interaction,
+        SocialContextType::SocialAttention,
+        SocialContextType::IntentProjection
     };
 
-    class HANPHeadBehaviorUtilFunc
+    struct Point
+    {
+        std::map<hanp_head_behavior::SocialContextType, double> criteria_scores_;
+        geometry_msgs::PointStamped point_;
+    };
+
+    class HANPHeadBehaviorFunc
     {
     public:
-        ~HANPHeadBehaviorUtilFunc();
+        HANPHeadBehaviorFunc()
+        {
+            for(auto context : hanp_head_behavior::SocialContext)
+            {
+                point_.criteria_scores_[context] = 0.0;
+            }
+        };
+        ~HANPHeadBehaviorFunc();
 
-        bool enable = false;
-        double weight;
-        hanp_head_behavior::Point point;
+        bool enable_ = false;
+        hanp_head_behavior::Point point_;
     };
 }
 
-#endif // HANP_HEAD_BEHAVIOR_UTIL_FUNC_H_
+#endif // HANP_HEAD_BEHAVIOR_FUNC_H_

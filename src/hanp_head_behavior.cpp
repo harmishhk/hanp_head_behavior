@@ -51,8 +51,8 @@ namespace hanp_head_behavior
     HANPHeadBehavior::HANPHeadBehavior() {}
     HANPHeadBehavior::~HANPHeadBehavior() {}
 
-    PathUtilFunc::PathUtilFunc() {}
-    HumanUtilFunc::HumanUtilFunc() {}
+    PathBehaviorFunc::PathBehaviorFunc() {}
+    HumanBehaviorFunc::HumanBehaviorFunc() {}
 
     void HANPHeadBehavior::initialize()
     {
@@ -93,11 +93,11 @@ namespace hanp_head_behavior
                 NODE_NAME, publish_rate_);
         }
 
-        // initialize utility functions
-        path_util_func_ = new hanp_head_behavior::PathUtilFunc();
-        util_funcs_.push_back(path_util_func_);
-        human_util_func_ = new hanp_head_behavior::HumanUtilFunc();
-        util_funcs_.push_back(human_util_func_);
+        // initialize behavior functions
+        path_behavior_func_ = new hanp_head_behavior::PathBehaviorFunc();
+        behavior_funcs_.push_back(path_behavior_func_);
+        human_behavior_func_ = new hanp_head_behavior::HumanBehaviorFunc();
+        behavior_funcs_.push_back(human_behavior_func_);
 
         // set-up dynamic reconfigure
         dsrv_ = new dynamic_reconfigure::Server<HANPHeadBehaviorConfig>(private_nh);
@@ -116,15 +116,17 @@ namespace hanp_head_behavior
 
         publish_rate_ = config.publish_rate;
 
-        path_util_func_->weight = config.path_func_weight;
-        human_util_func_->weight = config.human_func_weight;
-
         point_head_height_ = config.point_head_height;
         ttc_collision_radius_ = config.ttc_collision_dist/2;
         visibility_angle_ = config.visibility_angle;
         local_plan_max_delay_ = ros::Duration(config.local_plan_max_delay);
         max_ttc_looking_ = config.max_ttc;
         max_gma_ = config.max_gma;
+
+        criteria_weights_[hanp_head_behavior::SocialContextType::Aliveness] = config.aliveness_weight;
+        criteria_weights_[hanp_head_behavior::SocialContextType::Interaction] = config.interaction_weight;
+        criteria_weights_[hanp_head_behavior::SocialContextType::SocialAttention] = config.social_attention_weight;
+        criteria_weights_[hanp_head_behavior::SocialContextType::IntentProjection] = config.intent_projection_weight;
     }
 
     void HANPHeadBehavior::localPlanCB(const nav_msgs::Path& local_plan)
@@ -134,7 +136,7 @@ namespace hanp_head_behavior
         last_plan_recieve_time_ = ros::Time::now();
 
         hanp_head_behavior::Point point_head;
-        point_head.point.header.stamp = ros::Time::now();
+        point_head.point_.header.stamp = ros::Time::now();
 
         // look at the end of the local plan
         if(local_plan.poses.size() > 0)
@@ -142,28 +144,28 @@ namespace hanp_head_behavior
             tf::Pose local_plan_end;
             tf::poseMsgToTF(local_plan.poses.back().pose, local_plan_end);
             auto local_plan_end_extended = local_plan_end(tf::Vector3(LOCAL_PLAN_END_EXTEND,0.0,0.0));
-            point_head.point.header.frame_id = local_plan.poses.back().header.frame_id;
-            point_head.point.point.x = local_plan_end_extended.x();
-            point_head.point.point.y = local_plan_end_extended.y();
-            point_head.point.point.z = point_head_height_;
-            point_head.utility = 1.0;
+            point_head.point_.header.frame_id = local_plan.poses.back().header.frame_id;
+            point_head.point_.point.x = local_plan_end_extended.x();
+            point_head.point_.point.y = local_plan_end_extended.y();
+            point_head.point_.point.z = point_head_height_;
 
             // ROS_DEBUG_NAMED(NODE_NAME, "%s: head pointing to path", NODE_NAME);
         }
         // look in the front
         else
         {
-            point_head.point.header.frame_id = robot_base_frame_;
-            point_head.point.point.x = LOCAL_PLAN_END_EXTEND;
-            point_head.point.point.y = 0.0;
-            point_head.point.point.z = point_head_height_;
-            point_head.utility = 1.0;
+            point_head.point_.header.frame_id = robot_base_frame_;
+            point_head.point_.point.x = LOCAL_PLAN_END_EXTEND;
+            point_head.point_.point.y = 0.0;
+            point_head.point_.point.z = point_head_height_;
 
             // ROS_DEBUG_NAMED(NODE_NAME, "%s: head pointing in the front", NODE_NAME);
         }
 
-        path_util_func_->point = point_head;
-        path_util_func_->enable = true;
+        path_behavior_func_->point_ = point_head;
+        path_behavior_func_->point_.criteria_scores_[hanp_head_behavior::SocialContextType::Aliveness] = 1.0;
+        path_behavior_func_->point_.criteria_scores_[SocialContextType::IntentProjection] = 1.0;
+        path_behavior_func_->enable_ = true;
     }
 
     void HANPHeadBehavior::trackedHumansCB(const hanp_msgs::TrackedHumans& tracked_humans)
@@ -171,7 +173,7 @@ namespace hanp_head_behavior
         // ROS_DEBUG_NAMED(NODE_NAME, "%s: received tracked humans", NODE_NAME);
 
         // don't care about humans when we are not moving
-        if(!path_util_func_->enable)
+        if(!path_behavior_func_->enable_)
         {
             return;
         }
@@ -214,14 +216,14 @@ namespace hanp_head_behavior
         }
 
         // check if we are already looking at human
-        if(human_util_func_->enable)
+        if(human_behavior_func_->enable_)
         {
             // get the person we are looking at
             hanp_msgs::TrackedHuman looking_at;
             looking_at.track_id = 0;
             for(auto tracked_human : tracked_humans.tracks)
             {
-                if(tracked_human.track_id == human_util_func_->looking_at_id)
+                if(tracked_human.track_id == human_behavior_func_->looking_at_id)
                 {
                     looking_at = tracked_human;
                     break;
@@ -246,14 +248,14 @@ namespace hanp_head_behavior
                 if(fabs(head_pan_to_human_angle) < visibility_angle_)
                 {
                     // we have seen the human
-                    human_util_func_->enable = false;
+                    human_behavior_func_->enable_ = false;
                     ROS_DEBUG_NAMED(NODE_NAME, "%s: we have seen human %d, angle: %f",
                         NODE_NAME, looking_at.track_id, head_pan_to_human_angle);
                 }
                 else if(fabs(robot_base_to_human_angle) > max_gma_)
                 {
                     // we won't be able to see human anymore / doesn't matter any more to look that human
-                    human_util_func_->enable = false;
+                    human_behavior_func_->enable_ = false;
                     ROS_DEBUG_NAMED(NODE_NAME, "%s: we won't look at human %d anymore, angle: %f",
                         NODE_NAME, looking_at.track_id, robot_base_to_human_angle);
                 }
@@ -261,14 +263,13 @@ namespace hanp_head_behavior
                 {
                     // update the looking point with new human position
                     hanp_head_behavior::Point human_point;
-                    human_point.point.header.stamp = ros::Time::now();
-                    human_point.point.header.frame_id = head_pan_frame_;
-                    human_point.point.point.x = human_pose_in_head_pan.getX();
-                    human_point.point.point.y = human_pose_in_head_pan.getY();
-                    human_point.utility = 1.0;
+                    human_point.point_.header.stamp = ros::Time::now();
+                    human_point.point_.header.frame_id = head_pan_frame_;
+                    human_point.point_.point.x = human_pose_in_head_pan.getX();
+                    human_point.point_.point.y = human_pose_in_head_pan.getY();
 
-                    human_util_func_->point = human_point;
-                    human_util_func_->enable = true;
+                    human_behavior_func_->point_ = human_point;
+                    human_behavior_func_->enable_ = true;
 
                     ROS_DEBUG_NAMED(NODE_NAME, "%s: still looking at human %d, \npan-human angle: %f, \nbase-human angle: %f",
                         NODE_NAME, looking_at.track_id, head_pan_to_human_angle, robot_base_to_human_angle);
@@ -324,14 +325,16 @@ namespace hanp_head_behavior
         {
             // we found someone to look at
             hanp_head_behavior::Point human_point;
-            human_point.point.header.stamp = ros::Time::now();
-            human_point.point.header.frame_id = tracked_humans.header.frame_id;
-            human_point.point.point = human_with_min_ttc.pose.pose.position;
-            human_point.utility = 1.0;
+            human_point.point_.header.stamp = ros::Time::now();
+            human_point.point_.header.frame_id = tracked_humans.header.frame_id;
+            human_point.point_.point = human_with_min_ttc.pose.pose.position;
 
-            human_util_func_->point = human_point;
-            human_util_func_->looking_at_id = human_with_min_ttc.track_id;
-            human_util_func_->enable = true;
+            human_behavior_func_->point_ = human_point;
+            human_behavior_func_->point_.criteria_scores_[hanp_head_behavior::SocialContextType::Aliveness] = 1.0;
+            human_behavior_func_->point_.criteria_scores_[hanp_head_behavior::SocialContextType::Interaction] = 1.0;
+            human_behavior_func_->point_.criteria_scores_[hanp_head_behavior::SocialContextType::SocialAttention] = 1.0;
+            human_behavior_func_->looking_at_id = human_with_min_ttc.track_id;
+            human_behavior_func_->enable_ = true;
 
             already_looked_at_.push_back(human_with_min_ttc.track_id);
 
@@ -343,14 +346,14 @@ namespace hanp_head_behavior
             // there is no one to look at :(
             ROS_DEBUG_THROTTLE_NAMED(THROTTLE_TIME, NODE_NAME, "%s: there is no one to look at :(",
                 NODE_NAME);
-            human_util_func_->enable = false;
+            human_behavior_func_->enable_ = false;
         }
     }
 
     void HANPHeadBehavior::publishPointHead(const ros::TimerEvent& event)
     {
         // nothing to do when not moving
-        if(!path_util_func_->enable)
+        if(!path_behavior_func_->enable_)
         {
             return;
         }
@@ -360,7 +363,7 @@ namespace hanp_head_behavior
         if((now - last_plan_recieve_time_) > local_plan_max_delay_)
         {
             already_looked_at_.clear();
-            path_util_func_->enable = false;
+            path_behavior_func_->enable_ = false;
 
             geometry_msgs::PointStamped point_head;
             point_head.header.stamp = now;
@@ -376,22 +379,29 @@ namespace hanp_head_behavior
 
         // ROS_DEBUG_NAMED(NODE_NAME, "%s: going to publish point head", NODE_NAME);
 
-        // get the fucntion with maximum weight
-        double max_weight = 0;
-        HANPHeadBehaviorUtilFunc* max_weight_func = nullptr;
-        for (auto util_func : util_funcs_)
+        // get the fucntion with maximum criteria-weight*criteria-weight value
+        double max_value = 0.0;
+        HANPHeadBehaviorFunc* max_func = nullptr;
+        for (auto behavior_func : behavior_funcs_)
         {
-            if(util_func->enable && (util_func->weight > max_weight))
+            if(behavior_func->enable_)
             {
-                max_weight = util_func->weight;
-                max_weight_func = util_func;
+                auto func_value = 0.0;
+                for(auto criterion : hanp_head_behavior::SocialContext)
+                {
+                    func_value += (criteria_weights_[criterion] * behavior_func->point_.criteria_scores_[criterion]);
+                }
+                if(func_value > max_value)
+                {
+                    max_func = behavior_func;
+                }
             }
         }
 
-        // get the point_head point for function with maximum weight
-        if(max_weight_func)
+        // get the point_head point for function with maximum value
+        if(max_func)
         {
-            auto& point_head = max_weight_func->point.point;
+            auto& point_head = max_func->point_.point_;
 
             // get pointing angle in base
             int res;

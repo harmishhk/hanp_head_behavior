@@ -57,16 +57,16 @@ namespace hanp_head_behavior
         double r_;
     };
 
-    class PathUtilFunc : public HANPHeadBehaviorUtilFunc
+    class PathBehaviorFunc : public HANPHeadBehaviorFunc
     {
     public:
-        PathUtilFunc();
+        PathBehaviorFunc();
     };
 
-    class HumanUtilFunc : public HANPHeadBehaviorUtilFunc
+    class HumanBehaviorFunc : public HANPHeadBehaviorFunc
     {
     public:
-        HumanUtilFunc();
+        HumanBehaviorFunc();
 
         int looking_at_id;
     };
@@ -100,13 +100,14 @@ namespace hanp_head_behavior
         int publish_rate_;
         double ttc_collision_radius_, point_head_height_, visibility_angle_;
 
-        hanp_head_behavior::PathUtilFunc* path_util_func_;
-        hanp_head_behavior::HumanUtilFunc* human_util_func_;
-        std::vector<hanp_head_behavior::HANPHeadBehaviorUtilFunc*> util_funcs_;
+        hanp_head_behavior::PathBehaviorFunc* path_behavior_func_;
+        hanp_head_behavior::HumanBehaviorFunc* human_behavior_func_;
+        std::vector<hanp_head_behavior::HANPHeadBehaviorFunc*> behavior_funcs_;
         ros::Time last_plan_recieve_time_;
         ros::Duration local_plan_max_delay_;
         std::vector<int> already_looked_at_;
         double max_ttc_looking_, max_gma_;
+        std::map<hanp_head_behavior::SocialContextType, double> criteria_weights_;
 
         void publishPointHead(const ros::TimerEvent& event);
         double timeToCollision(hanp_head_behavior::Entity robot, hanp_head_behavior::Entity human);
