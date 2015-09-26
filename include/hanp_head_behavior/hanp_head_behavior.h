@@ -111,6 +111,7 @@ namespace hanp_head_behavior
 
         void publishPointHead(const ros::TimerEvent& event);
         double timeToCollision(hanp_head_behavior::Entity robot, hanp_head_behavior::Entity human);
+        double priorityScore(hanp_head_behavior::Entity robot, hanp_head_behavior::Entity human);
     };
 }
 

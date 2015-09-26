@@ -289,16 +289,16 @@ namespace hanp_head_behavior
             }
         }
 
-        // we are her if we are currently not looking at anyone or we lost whom we were looking at
+        // we are here if we are currently not looking at anyone or we lost whom we were looking at
 
         // get robot entity in humans frame
         hanp_head_behavior::Entity robot(robot_base_to_human_transform.getOrigin().getX(),
             robot_base_to_human_transform.getOrigin().getY(), robot_twist_in_humans_frame.linear.x,
-            robot_twist_in_humans_frame.linear.y, ttc_robot_radius_);
+            robot_twist_in_humans_frame.linear.y, 0.0);
 
-        // caculate person with lowest time-to-collision with the robot
-        double min_ttc = std::numeric_limits<double>::infinity();
-        hanp_msgs::TrackedHuman human_with_min_ttc;
+        // caculate person to look at
+        double max_priority = -std::numeric_limits<double>::infinity();
+        hanp_msgs::TrackedHuman selected_human;
         for(auto tracked_human : tracked_humans.tracks)
         {
             // nothing to do if we have already looked at this person
@@ -310,51 +310,54 @@ namespace hanp_head_behavior
                 continue;
             }
 
-            // calculate human radius after max_ttc time based on velocity obstacle
-            auto human_max_radius = VELOBS_MIN_RAD + (VELOBS_MAX_RAD - VELOBS_MIN_RAD)
-                * (max_ttc_looking_ / VELOBS_MAX_RAD_TIME);
+            // nothing to do if human is not within gaze modulation angle
+            tf::Pose tracked_human_tf;
+            tf::poseMsgToTF(tracked_human.pose.pose, tracked_human_tf);
+            auto human_pose_in_robot_base = (robot_base_to_human_transform
+                * tracked_human_tf).getOrigin();
+            auto robot_base_to_human_angle = atan2(human_pose_in_robot_base.getY(),
+                human_pose_in_robot_base.getX());
+            if(fabs(robot_base_to_human_angle) > max_gma_)
+            {
+                // we won't be able to see human anymore / doesn't matter any more to look that human
+                human_behavior_func_->enable_ = false;
+                ROS_DEBUG_NAMED(NODE_NAME, "%s: we won't look at human %d, angle: %f",
+                    NODE_NAME, tracked_human.track_id, robot_base_to_human_angle);
+                continue;
+            }
 
             hanp_head_behavior::Entity human(tracked_human.pose.pose.position.x,
                 tracked_human.pose.pose.position.y, tracked_human.twist.twist.linear.x,
-                tracked_human.twist.twist.linear.y, human_max_radius);
+                tracked_human.twist.twist.linear.y, 0.0);
 
-            // get first guess on ttc
-            auto ttc_at_max_rad = timeToCollision(human, robot);
-            if(ttc_at_max_rad < max_ttc_looking_)
+            // get priority score for the human
+            auto priority = priorityScore(human, robot);
+            if(priority > max_priority)
             {
-                // refine ttc from first guess
-                human.r_ = ttc_at_max_rad;
-                auto ttc = timeToCollision(human, robot);
-
-                // ROS_DEBUG_NAMED(NODE_NAME, "%s: ttc for human %d: %f", NODE_NAME,
-                //     tracked_human.track_id, ttc);
-                if(ttc < min_ttc)
-                {
-                    min_ttc = ttc;
-                    human_with_min_ttc = tracked_human;
-                }
+                max_priority = priority;
+                selected_human = tracked_human;
             }
         }
 
-        if(min_ttc < max_ttc_looking_)
+        if(max_priority > -std::numeric_limits<double>::infinity())
         {
             // we found someone to look at
             hanp_head_behavior::Point human_point;
             human_point.point_.header.stamp = ros::Time::now();
             human_point.point_.header.frame_id = tracked_humans.header.frame_id;
-            human_point.point_.point = human_with_min_ttc.pose.pose.position;
+            human_point.point_.point = selected_human.pose.pose.position;
 
             human_behavior_func_->point_ = human_point;
             human_behavior_func_->point_.criteria_scores_[hanp_head_behavior::SocialContextType::Aliveness] = 1.0;
             human_behavior_func_->point_.criteria_scores_[hanp_head_behavior::SocialContextType::Interaction] = 1.0;
             human_behavior_func_->point_.criteria_scores_[hanp_head_behavior::SocialContextType::SocialAttention] = 1.0;
-            human_behavior_func_->looking_at_id = human_with_min_ttc.track_id;
+            human_behavior_func_->looking_at_id = selected_human.track_id;
             human_behavior_func_->enable_ = true;
 
-            already_looked_at_.push_back(human_with_min_ttc.track_id);
+            already_looked_at_.push_back(selected_human.track_id);
 
             // ROS_DEBUG_NAMED(NODE_NAME, "%s: looking at human %d", NODE_NAME,
-            //     human_with_min_ttc.track_id);
+            //     selected_human.track_id);
         }
         else
         {
@@ -496,6 +499,18 @@ namespace hanp_head_behavior
         }
 
         return std::numeric_limits<double>::infinity();
+    }
+
+    // calculates priority score for looking at human based on their relative velocity and distance
+    double HANPHeadBehavior::priorityScore(hanp_head_behavior::Entity human, hanp_head_behavior::Entity robot)
+    {
+        // c is vector from robot to human
+        auto c = Eigen::Vector2d(robot.x_ - human.x_, robot.y_ - human.y_);
+
+        // v is the velocity of human considering robot steady
+        auto v = Eigen::Vector2d(human.vx_ - robot.vx_, human.vy_ - robot.vy_);
+
+        return (v.dot(c) / c.squaredNorm());
     }
 }
 
