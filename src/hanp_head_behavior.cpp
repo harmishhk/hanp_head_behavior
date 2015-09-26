@@ -41,6 +41,10 @@
 #define LOCAL_PLAN_MAX_DELAY 4.0 // seconds
 #define LOCAL_PLAN_END_EXTEND 0.5 // meters
 
+#define VELOBS_MIN_RAD 0.25
+#define VELOBS_MAX_RAD 0.75
+#define VELOBS_MAX_RAD_TIME 4.0
+
 #include <signal.h>
 
 #include <hanp_head_behavior/hanp_head_behavior.h>
@@ -117,7 +121,7 @@ namespace hanp_head_behavior
         publish_rate_ = config.publish_rate;
 
         point_head_height_ = config.point_head_height;
-        ttc_collision_radius_ = config.ttc_collision_dist/2;
+        ttc_robot_radius_ = config.ttc_robot_radius;
         visibility_angle_ = config.visibility_angle;
         local_plan_max_delay_ = ros::Duration(config.local_plan_max_delay);
         max_ttc_looking_ = config.max_ttc;
@@ -290,7 +294,7 @@ namespace hanp_head_behavior
         // get robot entity in humans frame
         hanp_head_behavior::Entity robot(robot_base_to_human_transform.getOrigin().getX(),
             robot_base_to_human_transform.getOrigin().getY(), robot_twist_in_humans_frame.linear.x,
-            robot_twist_in_humans_frame.linear.y, ttc_collision_radius_);
+            robot_twist_in_humans_frame.linear.y, ttc_robot_radius_);
 
         // caculate person with lowest time-to-collision with the robot
         double min_ttc = std::numeric_limits<double>::infinity();
@@ -306,18 +310,29 @@ namespace hanp_head_behavior
                 continue;
             }
 
+            // calculate human radius after max_ttc time based on velocity obstacle
+            auto human_max_radius = VELOBS_MIN_RAD + (VELOBS_MAX_RAD - VELOBS_MIN_RAD)
+                * (max_ttc_looking_ / VELOBS_MAX_RAD_TIME);
+
             hanp_head_behavior::Entity human(tracked_human.pose.pose.position.x,
                 tracked_human.pose.pose.position.y, tracked_human.twist.twist.linear.x,
-                tracked_human.twist.twist.linear.y, ttc_collision_radius_);
+                tracked_human.twist.twist.linear.y, human_max_radius);
 
-            auto ttc = timeToCollision(human, robot);
-            ttc = 1.0; //TODO: remove this after tests
-            // ROS_DEBUG_NAMED(NODE_NAME, "%s: ttc for human %d: %f", NODE_NAME,
-            //     tracked_human.track_id, ttc);
-            if(ttc < min_ttc)
+            // get first guess on ttc
+            auto ttc_at_max_rad = timeToCollision(human, robot);
+            if(ttc_at_max_rad < max_ttc_looking_)
             {
-                min_ttc = ttc;
-                human_with_min_ttc = tracked_human;
+                // refine ttc from first guess
+                human.r_ = ttc_at_max_rad;
+                auto ttc = timeToCollision(human, robot);
+
+                // ROS_DEBUG_NAMED(NODE_NAME, "%s: ttc for human %d: %f", NODE_NAME,
+                //     tracked_human.track_id, ttc);
+                if(ttc < min_ttc)
+                {
+                    min_ttc = ttc;
+                    human_with_min_ttc = tracked_human;
+                }
             }
         }
 

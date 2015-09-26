@@ -98,7 +98,7 @@ namespace hanp_head_behavior
         tf::TransformListener tf_;
         ros::Timer publish_timer_;
         int publish_rate_;
-        double ttc_collision_radius_, point_head_height_, visibility_angle_;
+        double ttc_robot_radius_, point_head_height_, visibility_angle_;
 
         hanp_head_behavior::PathBehaviorFunc* path_behavior_func_;
         hanp_head_behavior::HumanBehaviorFunc* human_behavior_func_;
