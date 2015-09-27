@@ -105,6 +105,7 @@ namespace hanp_head_behavior
         std::vector<hanp_head_behavior::HANPHeadBehaviorFunc*> behavior_funcs_;
         ros::Time last_plan_recieve_time_;
         ros::Duration local_plan_max_delay_;
+        double local_plan_end_extend_;
         std::vector<int> already_looked_at_;
         double max_ttc_looking_, max_gma_;
         std::map<hanp_head_behavior::SocialContextType, double> criteria_weights_;

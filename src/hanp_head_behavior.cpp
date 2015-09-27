@@ -37,9 +37,7 @@
 #define ROBOT_BASE_FRAME "base_link"
 #define HEAD_PAN_FRAME "head_pan_link"
 #define PUBLISH_RATE 10
-#define VISIBILITY_ANGLE 0.087 //radian (5 degrees)
 #define LOCAL_PLAN_MAX_DELAY 4.0 // seconds
-#define LOCAL_PLAN_END_EXTEND 0.5 // meters
 
 #define VELOBS_MIN_RAD 0.25
 #define VELOBS_MAX_RAD 0.75
@@ -124,6 +122,7 @@ namespace hanp_head_behavior
         ttc_robot_radius_ = config.ttc_robot_radius;
         visibility_angle_ = config.visibility_angle;
         local_plan_max_delay_ = ros::Duration(config.local_plan_max_delay);
+        local_plan_end_extend_ = config.local_plan_end_extend;
         max_ttc_looking_ = config.max_ttc;
         max_gma_ = config.max_gma;
 
@@ -147,7 +146,7 @@ namespace hanp_head_behavior
         {
             tf::Pose local_plan_end;
             tf::poseMsgToTF(local_plan.poses.back().pose, local_plan_end);
-            auto local_plan_end_extended = local_plan_end(tf::Vector3(LOCAL_PLAN_END_EXTEND,0.0,0.0));
+            auto local_plan_end_extended = local_plan_end(tf::Vector3(local_plan_end_extend_,0.0,0.0));
             point_head.point_.header.frame_id = local_plan.poses.back().header.frame_id;
             point_head.point_.point.x = local_plan_end_extended.x();
             point_head.point_.point.y = local_plan_end_extended.y();
@@ -159,7 +158,7 @@ namespace hanp_head_behavior
         else
         {
             point_head.point_.header.frame_id = robot_base_frame_;
-            point_head.point_.point.x = LOCAL_PLAN_END_EXTEND;
+            point_head.point_.point.x = local_plan_end_extend_;
             point_head.point_.point.y = 0.0;
             point_head.point_.point.z = point_head_height_;
 
@@ -392,7 +391,7 @@ namespace hanp_head_behavior
             geometry_msgs::PointStamped point_head;
             point_head.header.stamp = now;
             point_head.header.frame_id = robot_base_frame_;
-            point_head.point.x = LOCAL_PLAN_END_EXTEND;
+            point_head.point.x = local_plan_end_extend_;
             point_head.point.y = 0.0;
             point_head.point.z = point_head_height_;
             point_head_pub_.publish(point_head);
