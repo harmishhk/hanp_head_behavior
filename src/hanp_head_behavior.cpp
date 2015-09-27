@@ -271,12 +271,18 @@ namespace hanp_head_behavior
                     human_point.point_.header.frame_id = head_pan_frame_;
                     human_point.point_.point.x = human_pose_in_head_pan.getX();
                     human_point.point_.point.y = human_pose_in_head_pan.getY();
+                    human_point.criteria_scores_[hanp_head_behavior::SocialContextType::Aliveness] = 1.0;
+                    human_point.criteria_scores_[hanp_head_behavior::SocialContextType::Interaction] = 1.0;
+                    human_point.criteria_scores_[hanp_head_behavior::SocialContextType::SocialAttention] = 1.0;
 
                     human_behavior_func_->point_ = human_point;
                     human_behavior_func_->enable_ = true;
 
-                    ROS_DEBUG_NAMED(NODE_NAME, "%s: still looking at human %d, \npan-human angle: %f, \nbase-human angle: %f",
-                        NODE_NAME, looking_at.track_id, head_pan_to_human_angle, robot_base_to_human_angle);
+                    ROS_DEBUG_NAMED(NODE_NAME, "%s: still looking at human %d, \npan-human angle: %f,\n"
+                        "base-human angle: %f\npose: x=%f, y=%f in frame=%s",
+                        NODE_NAME, looking_at.track_id, head_pan_to_human_angle, robot_base_to_human_angle,
+                        human_behavior_func_->point_.point_.point.x, human_behavior_func_->point_.point_.point.y,
+                        human_behavior_func_->point_.point_.header.frame_id.c_str());
                     return;
                 }
             }
@@ -420,6 +426,9 @@ namespace hanp_head_behavior
         if(max_func)
         {
             auto& point_head = max_func->point_.point_;
+            ROS_DEBUG_NAMED(NODE_NAME, "%s: point with maxium value function x:%f, y:%f, z:%f, frame=%s",
+                NODE_NAME, point_head.point.x, point_head.point.y, point_head.point.z,
+                point_head.header.frame_id.c_str());
 
             // get pointing angle in base
             int res;
