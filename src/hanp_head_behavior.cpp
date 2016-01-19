@@ -531,10 +531,10 @@ void sigintHandler(int sig)
     ros::shutdown();
 }
 
-// the main method starts a rosnode and initializes the optotrack_person class
+// the main method starts a rosnode and initializes the HANPHeadBehavior class
 int main(int argc, char **argv)
 {
-    // starting the optotrack_person node
+    // starting the hanp_head_behavior node
     ros::init(argc, argv, NODE_NAME);
     ROS_DEBUG_NAMED(NODE_NAME, "started %s node", NODE_NAME);
 
