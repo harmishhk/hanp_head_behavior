@@ -99,6 +99,8 @@ namespace hanp_head_behavior
         ros::Timer publish_timer_;
         int publish_rate_;
         double ttc_robot_radius_, point_head_height_, visibility_angle_;
+        std::string local_plan_frame_;
+        double local_plan_z_diff_;
 
         hanp_head_behavior::PathBehaviorFunc* path_behavior_func_;
         hanp_head_behavior::HumanBehaviorFunc* human_behavior_func_;

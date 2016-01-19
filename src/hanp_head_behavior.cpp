@@ -106,6 +106,7 @@ namespace hanp_head_behavior
         dynamic_reconfigure::Server<HANPHeadBehaviorConfig>::CallbackType cb = boost::bind(&HANPHeadBehavior::reconfigureCB, this, _1, _2);
         dsrv_->setCallback(cb);
 
+        local_plan_frame_ = "";
         ROS_DEBUG_NAMED(NODE_NAME, "%s: node initialized", NODE_NAME);
     }
 
@@ -144,13 +145,51 @@ namespace hanp_head_behavior
         // look at the end of the local plan
         if(local_plan.poses.size() > 0)
         {
+            tf::StampedTransform robot_base_to_local_plan_transform;
             tf::Pose local_plan_end;
             tf::poseMsgToTF(local_plan.poses.back().pose, local_plan_end);
             auto local_plan_end_extended = local_plan_end(tf::Vector3(local_plan_end_extend_,0.0,0.0));
+
+            // assuming local-plan frame is not chaning its position in z-direction
+            if(local_plan.poses.back().header.frame_id != local_plan_frame_)
+            {
+                int res;
+                std::string error_msg;
+                bool transforms_found = false;
+                try
+                {
+                    res = tf_.waitForTransform(robot_base_frame_, local_plan.poses.back().header.frame_id,
+                        local_plan.poses.back().header.stamp, ros::Duration(0.5), ros::Duration(0.01), &error_msg);
+                    tf_.lookupTransform(robot_base_frame_, local_plan.poses.back().header.frame_id,
+                        local_plan.poses.back().header.stamp, robot_base_to_local_plan_transform);
+                    transforms_found = true;
+                }
+                catch(const tf::ExtrapolationException &ex)
+                {
+                    ROS_DEBUG_NAMED(NODE_NAME, "%s: cannot extrapolate transform from %s to %s, error: %d",
+                        NODE_NAME, local_plan.poses.back().header.frame_id.c_str(), robot_base_frame_.c_str(), res);
+                }
+                catch(const tf::TransformException &ex)
+                {
+                    ROS_ERROR_NAMED(NODE_NAME, "%s: transform failure (%d): %s", NODE_NAME, res, ex.what());
+                }
+
+                if(!transforms_found)
+                {
+                    // don't look anywhere when transform not found
+                    return;
+                }
+                else
+                {
+                    local_plan_frame_ = local_plan.poses.back().header.frame_id;
+                    local_plan_z_diff_ = robot_base_to_local_plan_transform.getOrigin().getZ();
+                }
+            }
+
             point_head.point_.header.frame_id = local_plan.poses.back().header.frame_id;
             point_head.point_.point.x = local_plan_end_extended.x();
             point_head.point_.point.y = local_plan_end_extended.y();
-            point_head.point_.point.z = point_head_height_;
+            point_head.point_.point.z = point_head_height_ - local_plan_z_diff_;
 
             // ROS_DEBUG_NAMED(NODE_NAME, "%s: head pointing to path", NODE_NAME);
         }
