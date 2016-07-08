@@ -38,6 +38,7 @@
 #include <hanp_head_behavior/HANPHeadBehaviorConfig.h>
 
 #include <hanp_msgs/TrackedHumans.h>
+#include <hanp_msgs/TrackedSegmentType.h>
 #include <nav_msgs/Path.h>
 #include <geometry_msgs/PointStamped.h>
 #include <tf/transform_listener.h>
@@ -101,6 +102,7 @@ namespace hanp_head_behavior
         double ttc_robot_radius_, point_head_height_, visibility_angle_;
         std::string local_plan_frame_;
         double local_plan_z_diff_;
+        int default_human_segment_;
 
         hanp_head_behavior::PathBehaviorFunc* path_behavior_func_;
         hanp_head_behavior::HumanBehaviorFunc* human_behavior_func_;

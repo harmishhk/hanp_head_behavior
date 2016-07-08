@@ -38,6 +38,7 @@
 #define HEAD_PAN_FRAME "head_pan_link"
 #define PUBLISH_RATE 10
 #define LOCAL_PLAN_MAX_DELAY 4.0 // seconds
+#define DEFAULT_HUMAN_SEGMENT hanp_msgs::TrackedSegmentType::TORSO
 
 #define VELOBS_MIN_RAD 0.25
 #define VELOBS_MAX_RAD 0.75
@@ -71,6 +72,8 @@ namespace hanp_head_behavior
 
         private_nh.param("publish_rate", publish_rate_, PUBLISH_RATE);
 
+        private_nh.param("default_human_segment", default_human_segment_, (int)(DEFAULT_HUMAN_SEGMENT));
+
         double local_plan_max_delay_time;
         private_nh.param("local_plan_max_delay", local_plan_max_delay_time, LOCAL_PLAN_MAX_DELAY);
         local_plan_max_delay_ = ros::Duration(local_plan_max_delay_time);
@@ -91,7 +94,7 @@ namespace hanp_head_behavior
         }
         else
         {
-            ROS_ERROR_NAMED(NODE_NAME, "%s: publish rate (asked: %f hz) cannot be < 0, nothing will be published",
+            ROS_ERROR_NAMED(NODE_NAME, "%s: publish rate (asked: %d hz) cannot be < 0, nothing will be published",
                 NODE_NAME, publish_rate_);
         }
 
@@ -261,76 +264,97 @@ namespace hanp_head_behavior
         if(human_behavior_func_->enable_)
         {
             // get the person we are looking at
-            hanp_msgs::TrackedHuman looking_at;
-            looking_at.track_id = 0;
-            for(auto tracked_human : tracked_humans.tracks)
+            auto looking_at_it = tracked_humans.humans.end();
+            for(auto it = tracked_humans.humans.begin(); it != tracked_humans.humans.end(); ++it)
             {
-                if(tracked_human.track_id == human_behavior_func_->looking_at_id)
+                if(it->track_id == human_behavior_func_->looking_at_id)
                 {
-                    looking_at = tracked_human;
+                    looking_at_it = it;
                     break;
                 }
             }
 
-            // to whom we were looking at is still detected
-            if(looking_at.track_id != 0)
+            if(looking_at_it != tracked_humans.humans.end())
             {
-                // get human whom we are looking at in head_pan frame
-                tf::Pose transformed_human_tf;
-                tf::poseMsgToTF(looking_at.pose.pose, transformed_human_tf);
-                auto human_pose_in_head_pan = (head_pan_to_humans_transform
-                    * transformed_human_tf).getOrigin();
-                auto head_pan_to_human_angle = atan2(human_pose_in_head_pan.getY(),
-                    human_pose_in_head_pan.getX());
-                auto human_pose_in_robot_base = (robot_base_to_human_transform
-                    * transformed_human_tf).getOrigin();
-                auto robot_base_to_human_angle = atan2(human_pose_in_robot_base.getY(),
-                    human_pose_in_robot_base.getX());
-
-                if(fabs(head_pan_to_human_angle) < visibility_angle_)
+                auto& looking_at = *looking_at_it;
+                auto looking_at_segment_it = looking_at.segments.end();
+                for(auto it = looking_at.segments.begin(); it != looking_at.segments.end(); ++it)
                 {
-                    // we have seen the human
-                    human_behavior_func_->enable_ = false;
-                    ROS_DEBUG_NAMED(NODE_NAME, "%s: we have seen human %d, angle: %f",
-                        NODE_NAME, looking_at.track_id, head_pan_to_human_angle);
+                    if(it->type == default_human_segment_)
+                    {
+                        looking_at_segment_it = it;
+                        break;
+                    }
                 }
-                else if(fabs(robot_base_to_human_angle) > max_gma_)
+
+                if(looking_at_segment_it != looking_at.segments.end())
                 {
-                    // we won't be able to see human anymore / doesn't matter any more to look that human
-                    human_behavior_func_->enable_ = false;
-                    ROS_DEBUG_NAMED(NODE_NAME, "%s: we won't look at human %d anymore, angle: %f",
-                        NODE_NAME, looking_at.track_id, robot_base_to_human_angle);
+                    // to whom we were looking at is still detected
+                    auto looking_at_segment = *looking_at_segment_it;
+
+                    // get human whom we are looking at in head_pan frame
+                    tf::Pose transformed_human_tf;
+                    tf::poseMsgToTF(looking_at_segment.pose.pose, transformed_human_tf);
+                    auto human_pose_in_head_pan = (head_pan_to_humans_transform
+                        * transformed_human_tf).getOrigin();
+                    auto head_pan_to_human_angle = atan2(human_pose_in_head_pan.getY(),
+                        human_pose_in_head_pan.getX());
+                    auto human_pose_in_robot_base = (robot_base_to_human_transform
+                        * transformed_human_tf).getOrigin();
+                    auto robot_base_to_human_angle = atan2(human_pose_in_robot_base.getY(),
+                        human_pose_in_robot_base.getX());
+
+                    if(fabs(head_pan_to_human_angle) < visibility_angle_)
+                    {
+                        // we have seen the human
+                        human_behavior_func_->enable_ = false;
+                        ROS_DEBUG_NAMED(NODE_NAME, "%s: we have seen human %lu, angle: %f",
+                            NODE_NAME, looking_at.track_id, head_pan_to_human_angle);
+                    }
+                    else if(fabs(robot_base_to_human_angle) > max_gma_)
+                    {
+                        // we won't be able to see human anymore / doesn't matter any more to look that human
+                        human_behavior_func_->enable_ = false;
+                        ROS_DEBUG_NAMED(NODE_NAME, "%s: we won't look at human %lu anymore, angle: %f",
+                            NODE_NAME, looking_at.track_id, robot_base_to_human_angle);
+                    }
+                    else
+                    {
+                        // update the looking point with new human position
+                        hanp_head_behavior::Point human_point;
+                        human_point.point_.header.stamp = ros::Time::now();
+                        human_point.point_.header.frame_id = head_pan_frame_;
+                        human_point.point_.point.x = human_pose_in_head_pan.getX();
+                        human_point.point_.point.y = human_pose_in_head_pan.getY();
+                        human_point.criteria_scores_[hanp_head_behavior::SocialContextType::Aliveness] = 1.0;
+                        human_point.criteria_scores_[hanp_head_behavior::SocialContextType::Interaction] = 1.0;
+                        human_point.criteria_scores_[hanp_head_behavior::SocialContextType::SocialAttention] = 1.0;
+
+                        human_behavior_func_->point_ = human_point;
+                        human_behavior_func_->enable_ = true;
+
+                        ROS_DEBUG_NAMED(NODE_NAME, "%s: still looking at human %lu, \npan-human angle: %f,\n"
+                            "base-human angle: %f\npose: x=%f, y=%f in frame=%s",
+                            NODE_NAME, looking_at.track_id, head_pan_to_human_angle, robot_base_to_human_angle,
+                            human_behavior_func_->point_.point_.point.x, human_behavior_func_->point_.point_.point.y,
+                            human_behavior_func_->point_.point_.header.frame_id.c_str());
+                        return;
+                    }
                 }
                 else
                 {
-                    // update the looking point with new human position
-                    hanp_head_behavior::Point human_point;
-                    human_point.point_.header.stamp = ros::Time::now();
-                    human_point.point_.header.frame_id = head_pan_frame_;
-                    human_point.point_.point.x = human_pose_in_head_pan.getX();
-                    human_point.point_.point.y = human_pose_in_head_pan.getY();
-                    human_point.criteria_scores_[hanp_head_behavior::SocialContextType::Aliveness] = 1.0;
-                    human_point.criteria_scores_[hanp_head_behavior::SocialContextType::Interaction] = 1.0;
-                    human_point.criteria_scores_[hanp_head_behavior::SocialContextType::SocialAttention] = 1.0;
-
-                    human_behavior_func_->point_ = human_point;
-                    human_behavior_func_->enable_ = true;
-
-                    ROS_DEBUG_NAMED(NODE_NAME, "%s: still looking at human %d, \npan-human angle: %f,\n"
-                        "base-human angle: %f\npose: x=%f, y=%f in frame=%s",
-                        NODE_NAME, looking_at.track_id, head_pan_to_human_angle, robot_base_to_human_angle,
-                        human_behavior_func_->point_.point_.point.x, human_behavior_func_->point_.point_.point.y,
-                        human_behavior_func_->point_.point_.header.frame_id.c_str());
-                    return;
+                    // we lost the default segment of human whom we were looking at
+                    ROS_DEBUG_NAMED(NODE_NAME, "%s: we lost default segment of human %d, whom we were looking at",
+                        NODE_NAME, human_behavior_func_->looking_at_id);
                 }
             }
             else
             {
                 // we lost the human whom we were looking at
                 ROS_DEBUG_NAMED(NODE_NAME, "%s: we lost human %d, whom we were looking at",
-                    NODE_NAME, looking_at.track_id);
-                //TODO: dedice whether to keep looking at persons last knows position until we finish, and implement here
+                    NODE_NAME, human_behavior_func_->looking_at_id);
             }
+            //TODO: dedice whether to keep looking at persons last known position until we finish, and implement here
         }
 
         // we are here if we are currently not looking at anyone or we lost whom we were looking at
@@ -341,22 +365,39 @@ namespace hanp_head_behavior
             robot_twist_in_humans_frame.linear.y, 0.0);
 
         // caculate person to look at
+        auto selected_human_it = tracked_humans.humans.end();
         double max_priority = -std::numeric_limits<double>::infinity();
-        hanp_msgs::TrackedHuman selected_human;
-        for(auto tracked_human : tracked_humans.tracks)
+        for(auto tracked_human_it = tracked_humans.humans.begin(); tracked_human_it != tracked_humans.humans.end(); ++tracked_human_it)
         {
-            // nothing to do if we have already looked at this person
+            // nothing  do if we have already looked at this person
             if(std::find(already_looked_at_.begin(), already_looked_at_.end(),
-                tracked_human.track_id) != already_looked_at_.end())
+                tracked_human_it->track_id) != already_looked_at_.end())
             {
-                ROS_DEBUG_NAMED(NODE_NAME, "%s: we have already looked at human %d, continueing",
-                    NODE_NAME, tracked_human.track_id);
+                ROS_DEBUG_NAMED(NODE_NAME, "%s: we have already looked at human %lu, continueing",
+                    NODE_NAME, tracked_human_it->track_id);
                 continue;
             }
 
+            // nothing to do if new human does not have default segment
+            auto selected_segment_it = tracked_human_it->segments.end();
+            for(auto tracked_segment_it = tracked_human_it->segments.begin(); tracked_segment_it != tracked_human_it->segments.end(); ++tracked_segment_it)
+            {
+                if(tracked_segment_it->type == default_human_segment_)
+                {
+                    selected_segment_it = tracked_segment_it;
+                    break;
+                }
+            }
+            if(selected_segment_it == tracked_human_it->segments.end())
+            {
+                continue;
+            }
+
+            auto& selected_segment = *selected_segment_it;
+
             // nothing to do if human is not within gaze modulation angle
             tf::Pose tracked_human_tf;
-            tf::poseMsgToTF(tracked_human.pose.pose, tracked_human_tf);
+            tf::poseMsgToTF(selected_segment.pose.pose, tracked_human_tf);
             auto human_pose_in_robot_base = (robot_base_to_human_transform
                 * tracked_human_tf).getOrigin();
             auto robot_base_to_human_angle = atan2(human_pose_in_robot_base.getY(),
@@ -365,43 +406,62 @@ namespace hanp_head_behavior
             {
                 // we won't be able to see human anymore / doesn't matter any more to look that human
                 human_behavior_func_->enable_ = false;
-                ROS_DEBUG_NAMED(NODE_NAME, "%s: we won't look at human %d, angle: %f",
-                    NODE_NAME, tracked_human.track_id, robot_base_to_human_angle);
+                ROS_DEBUG_NAMED(NODE_NAME, "%s: we won't look at human %lu, angle: %f",
+                    NODE_NAME, tracked_human_it->track_id, robot_base_to_human_angle);
                 continue;
             }
 
-            hanp_head_behavior::Entity human(tracked_human.pose.pose.position.x,
-                tracked_human.pose.pose.position.y, tracked_human.twist.twist.linear.x,
-                tracked_human.twist.twist.linear.y, 0.0);
+            hanp_head_behavior::Entity human(selected_segment.pose.pose.position.x,
+                selected_segment.pose.pose.position.y, selected_segment.twist.twist.linear.x,
+                selected_segment.twist.twist.linear.y, 0.0);
 
             // get priority score for the human
             auto priority = priorityScore(human, robot);
             if(priority > max_priority)
             {
                 max_priority = priority;
-                selected_human = tracked_human;
+                selected_human_it = tracked_human_it;
             }
         }
 
-        if(max_priority > -std::numeric_limits<double>::infinity())
+        if(selected_human_it != tracked_humans.humans.end() && max_priority > -std::numeric_limits<double>::infinity())
         {
             // we found someone to look at
-            hanp_head_behavior::Point human_point;
-            human_point.point_.header.stamp = ros::Time::now();
-            human_point.point_.header.frame_id = tracked_humans.header.frame_id;
-            human_point.point_.point = selected_human.pose.pose.position;
+            auto& selected_human = *selected_human_it;
+            auto selected_segment_it = selected_human.segments.end();
+            for(auto segment_it = selected_human.segments.begin(); segment_it != selected_human.segments.end(); ++segment_it)
+            {
+                if(segment_it->type == default_human_segment_)
+                {
+                    selected_segment_it = segment_it;
+                    break;
+                }
+            }
 
-            human_behavior_func_->point_ = human_point;
-            human_behavior_func_->point_.criteria_scores_[hanp_head_behavior::SocialContextType::Aliveness] = 1.0;
-            human_behavior_func_->point_.criteria_scores_[hanp_head_behavior::SocialContextType::Interaction] = 1.0;
-            human_behavior_func_->point_.criteria_scores_[hanp_head_behavior::SocialContextType::SocialAttention] = 1.0;
-            human_behavior_func_->looking_at_id = selected_human.track_id;
-            human_behavior_func_->enable_ = true;
+            if(selected_segment_it != selected_human.segments.end())
+            {
+                auto& selected_segment = *selected_segment_it;
+                hanp_head_behavior::Point human_point;
+                human_point.point_.header.stamp = ros::Time::now();
+                human_point.point_.header.frame_id = tracked_humans.header.frame_id;
+                human_point.point_.point = selected_segment.pose.pose.position;
 
-            already_looked_at_.push_back(selected_human.track_id);
+                human_behavior_func_->point_ = human_point;
+                human_behavior_func_->point_.criteria_scores_[hanp_head_behavior::SocialContextType::Aliveness] = 1.0;
+                human_behavior_func_->point_.criteria_scores_[hanp_head_behavior::SocialContextType::Interaction] = 1.0;
+                human_behavior_func_->point_.criteria_scores_[hanp_head_behavior::SocialContextType::SocialAttention] = 1.0;
+                human_behavior_func_->looking_at_id = selected_human.track_id;
+                human_behavior_func_->enable_ = true;
 
-            // ROS_DEBUG_NAMED(NODE_NAME, "%s: looking at human %d", NODE_NAME,
-            //     selected_human.track_id);
+                already_looked_at_.push_back(selected_human.track_id);
+
+                // ROS_DEBUG_NAMED(NODE_NAME, "%s: looking at human %d", NODE_NAME,
+                //     selected_human.track_id);
+            }
+            else
+            {
+                ROS_DEBUG_NAMED(NODE_NAME, "%s: we lost segment of human during calculation, this should never happen", NODE_NAME);
+            }
         }
         else
         {
@@ -449,7 +509,7 @@ namespace hanp_head_behavior
             if(behavior_func->enable_)
             {
                 auto func_value = 0.0;
-                for(auto criterion : hanp_head_behavior::SocialContext)
+                for(auto& criterion : hanp_head_behavior::SocialContext)
                 {
                     func_value += (criteria_weights_[criterion] * behavior_func->point_.criteria_scores_[criterion]);
                 }
